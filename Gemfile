@@ -9,6 +9,7 @@ gem "irb"
 gem "rake", "~> 13.0"
 
 gem "rake-compiler"
+gem "mini_portile2", "~> 2.8"
 
 gem "minitest", "~> 5.16"
 
