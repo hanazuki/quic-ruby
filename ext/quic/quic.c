@@ -1,6 +1,8 @@
 #include "quic.h"
 
 VALUE rb_mQuic;
+VALUE rb_mQuicConnection;
+VALUE rb_cQuicConnectionClient;
 
 static VALUE
 quic_library_versions(VALUE self)
@@ -18,5 +20,8 @@ RUBY_FUNC_EXPORTED void
 Init_quic(void)
 {
   rb_mQuic = rb_define_module("Quic");
+  rb_mQuicConnection = rb_define_module_under(rb_mQuic, "Connection");
   rb_define_singleton_method(rb_mQuic, "library_versions", quic_library_versions, 0);
+
+  Init_quic_connection_client(rb_mQuicConnection);
 }
