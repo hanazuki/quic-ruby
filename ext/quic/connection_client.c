@@ -1,8 +1,8 @@
 #include "quic.h"
 
-#include <netdb.h>
 #include <netinet/in.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <time.h>
 
 #include <openssl/rand.h>
@@ -81,51 +81,97 @@ quic_get_new_connection_id_cb(ngtcp2_conn *conn, ngtcp2_cid *cid,
 }
 
 static void
-quic_resolve_remote(const char *host, int port,
-                    struct sockaddr_storage *out, socklen_t *outlen)
+quic_require_binary(VALUE str, const char *name)
 {
-  struct addrinfo hints;
-  struct addrinfo *res = NULL;
-  char port_s[16];
-
-  memset(&hints, 0, sizeof(hints));
-  hints.ai_family = AF_UNSPEC;
-  hints.ai_socktype = SOCK_DGRAM;
-  snprintf(port_s, sizeof(port_s), "%d", port);
-
-  if (getaddrinfo(host, port_s, &hints, &res) == 0 && res != NULL) {
-    memcpy(out, res->ai_addr, res->ai_addrlen);
-    *outlen = res->ai_addrlen;
-    freeaddrinfo(res);
-    return;
+  Check_Type(str, T_STRING);
+  if (rb_enc_get_index(str) != rb_ascii8bit_encindex()) {
+    rb_raise(rb_eArgError, "%s must be ASCII-8BIT (binary) encoding", name);
   }
+}
 
-  struct sockaddr_in *sin = (struct sockaddr_in *)out;
-  memset(sin, 0, sizeof(*sin));
-  sin->sin_family = AF_INET;
-  sin->sin_port = htons((uint16_t)port);
-  *outlen = sizeof(*sin);
+static uint64_t
+quic_get_uint64_field(VALUE obj, const char *name)
+{
+  VALUE v = rb_funcall(obj, rb_intern(name), 0);
+  return (uint64_t)NUM2ULL(v);
+}
+
+static ngtcp2_cc_algo
+quic_cc_algo_from_sym(VALUE sym)
+{
+  Check_Type(sym, T_SYMBOL);
+  ID id = SYM2ID(sym);
+  if (id == rb_intern("reno"))  return NGTCP2_CC_ALGO_RENO;
+  if (id == rb_intern("cubic")) return NGTCP2_CC_ALGO_CUBIC;
+  if (id == rb_intern("bbr"))   return NGTCP2_CC_ALGO_BBR;
+  rb_raise(rb_eArgError, "unknown cc_algo: %"PRIsVALUE" (expected :reno, :cubic, or :bbr)", sym);
+}
+
+static void
+quic_fill_transport_params(ngtcp2_transport_params *params, VALUE tp)
+{
+  ngtcp2_transport_params_default(params);
+  params->initial_max_stream_data_bidi_local =
+    quic_get_uint64_field(tp, "initial_max_stream_data_bidi_local");
+  params->initial_max_stream_data_bidi_remote =
+    quic_get_uint64_field(tp, "initial_max_stream_data_bidi_remote");
+  params->initial_max_stream_data_uni =
+    quic_get_uint64_field(tp, "initial_max_stream_data_uni");
+  params->initial_max_data =
+    quic_get_uint64_field(tp, "initial_max_data");
+  params->initial_max_streams_bidi =
+    quic_get_uint64_field(tp, "initial_max_streams_bidi");
+  params->initial_max_streams_uni =
+    quic_get_uint64_field(tp, "initial_max_streams_uni");
+  params->max_idle_timeout =
+    (ngtcp2_duration)quic_get_uint64_field(tp, "max_idle_timeout");
+  params->active_connection_id_limit =
+    quic_get_uint64_field(tp, "active_connection_id_limit");
+}
+
+static void
+quic_fill_settings(ngtcp2_settings *settings, VALUE st)
+{
+  ngtcp2_settings_default(settings);
+  settings->initial_ts = quic_now();
+  settings->cc_algo = quic_cc_algo_from_sym(rb_funcall(st, rb_intern("cc_algo"), 0));
+  settings->initial_rtt =
+    (ngtcp2_duration)quic_get_uint64_field(st, "initial_rtt");
+  settings->max_window =
+    quic_get_uint64_field(st, "max_window");
+  settings->max_stream_window =
+    quic_get_uint64_field(st, "max_stream_window");
+  settings->handshake_timeout =
+    (ngtcp2_duration)quic_get_uint64_field(st, "handshake_timeout");
+  VALUE no_pmtud = rb_funcall(st, rb_intern("no_pmtud"), 0);
+  settings->no_pmtud = RTEST(no_pmtud) ? 1 : 0;
 }
 
 static VALUE
-quic_client_initialize(int argc, VALUE *argv, VALUE self)
+quic_client_open(int argc, VALUE *argv, VALUE klass)
 {
   VALUE opts = Qnil;
   rb_scan_args(argc, argv, "0:", &opts);
   if (NIL_P(opts)) {
-    rb_raise(rb_eArgError, "missing keywords: host, port");
+    rb_raise(rb_eArgError,
+             "missing keywords: local_sockaddr, remote_sockaddr, server_name, transport_params, settings");
   }
 
-  VALUE host_v = rb_hash_aref(opts, ID2SYM(rb_intern("host")));
-  VALUE port_v = rb_hash_aref(opts, ID2SYM(rb_intern("port")));
-  if (NIL_P(host_v) || NIL_P(port_v)) {
-    rb_raise(rb_eArgError, "host: and port: are required");
-  }
-  Check_Type(host_v, T_STRING);
-  int port = NUM2INT(port_v);
+  VALUE local_sockaddr   = rb_hash_aref(opts, ID2SYM(rb_intern("local_sockaddr")));
+  VALUE remote_sockaddr  = rb_hash_aref(opts, ID2SYM(rb_intern("remote_sockaddr")));
+  VALUE server_name      = rb_hash_aref(opts, ID2SYM(rb_intern("server_name")));
+  VALUE transport_params = rb_hash_aref(opts, ID2SYM(rb_intern("transport_params")));
+  VALUE settings_v       = rb_hash_aref(opts, ID2SYM(rb_intern("settings")));
 
-  rb_ivar_set(self, rb_intern("@host"), host_v);
-  rb_ivar_set(self, rb_intern("@port"), port_v);
+  if (NIL_P(local_sockaddr) || NIL_P(remote_sockaddr) || NIL_P(server_name) ||
+      NIL_P(transport_params) || NIL_P(settings_v)) {
+    rb_raise(rb_eArgError,
+             "all keywords required: local_sockaddr, remote_sockaddr, server_name, transport_params, settings");
+  }
+
+  quic_require_binary(local_sockaddr,  "local_sockaddr");
+  quic_require_binary(remote_sockaddr, "remote_sockaddr");
+  Check_Type(server_name, T_STRING);
 
   if (!quic_crypto_initialized) {
     if (ngtcp2_crypto_quictls_init() != 0) {
@@ -133,6 +179,9 @@ quic_client_initialize(int argc, VALUE *argv, VALUE self)
     }
     quic_crypto_initialized = 1;
   }
+
+  VALUE self = quic_client_alloc(klass);
+  rb_ivar_set(self, rb_intern("@server_name"), server_name);
 
   quic_client_t *c;
   TypedData_Get_Struct(self, quic_client_t, &quic_client_data_type, c);
@@ -150,7 +199,7 @@ quic_client_initialize(int argc, VALUE *argv, VALUE self)
     rb_raise(rb_eRuntimeError, "SSL_new failed");
   }
   SSL_set_connect_state(c->ssl);
-  SSL_set_tlsext_host_name(c->ssl, RSTRING_PTR(host_v));
+  SSL_set_tlsext_host_name(c->ssl, RSTRING_PTR(server_name));
 
   c->scid.datalen = 8;
   if (RAND_bytes(c->scid.data, 8) != 1) {
@@ -178,33 +227,14 @@ quic_client_initialize(int argc, VALUE *argv, VALUE self)
   callbacks.get_new_connection_id = quic_get_new_connection_id_cb;
 
   ngtcp2_settings settings;
-  ngtcp2_settings_default(&settings);
-  settings.initial_ts = quic_now();
+  quic_fill_settings(&settings, settings_v);
 
   ngtcp2_transport_params params;
-  ngtcp2_transport_params_default(&params);
-  params.initial_max_stream_data_bidi_local = 256 * 1024;
-  params.initial_max_stream_data_bidi_remote = 256 * 1024;
-  params.initial_max_stream_data_uni = 256 * 1024;
-  params.initial_max_data = 1024 * 1024;
-  params.initial_max_streams_bidi = 100;
-  params.initial_max_streams_uni = 100;
-  params.max_idle_timeout = 30 * NGTCP2_SECONDS;
-  params.active_connection_id_limit = 7;
-
-  struct sockaddr_storage local_addr;
-  struct sockaddr_storage remote_addr;
-  socklen_t local_len;
-  socklen_t remote_len;
-
-  memset(&local_addr, 0, sizeof(local_addr));
-  ((struct sockaddr_in *)&local_addr)->sin_family = AF_INET;
-  local_len = sizeof(struct sockaddr_in);
-  quic_resolve_remote(RSTRING_PTR(host_v), port, &remote_addr, &remote_len);
+  quic_fill_transport_params(&params, transport_params);
 
   ngtcp2_path path = {
-    {(struct sockaddr *)&local_addr, local_len},
-    {(struct sockaddr *)&remote_addr, remote_len},
+    {(struct sockaddr *)RSTRING_PTR(local_sockaddr),  (ngtcp2_socklen)RSTRING_LEN(local_sockaddr)},
+    {(struct sockaddr *)RSTRING_PTR(remote_sockaddr), (ngtcp2_socklen)RSTRING_LEN(remote_sockaddr)},
     NULL,
   };
 
@@ -212,7 +242,7 @@ quic_client_initialize(int argc, VALUE *argv, VALUE self)
                                   NGTCP2_PROTO_VER_V1, &callbacks,
                                   &settings, &params, NULL, c);
   if (rv != 0) {
-    rb_raise(rb_eRuntimeError, "ngtcp2_conn_client_new failed: %s", ngtcp2_strerror(rv));
+    quic_raise_ngtcp2_error(rv);
   }
 
   ngtcp2_conn_set_tls_native_handle(c->conn, c->ssl);
@@ -225,5 +255,5 @@ Init_quic_connection_client(VALUE rb_mQuicConnectionArg)
 {
   rb_cQuicConnectionClient = rb_define_class_under(rb_mQuicConnectionArg, "Client", rb_cObject);
   rb_define_alloc_func(rb_cQuicConnectionClient, quic_client_alloc);
-  rb_define_method(rb_cQuicConnectionClient, "initialize", quic_client_initialize, -1);
+  rb_define_singleton_method(rb_cQuicConnectionClient, "_open", quic_client_open, -1);
 }

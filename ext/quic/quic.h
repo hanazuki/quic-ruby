@@ -2,6 +2,7 @@
 #define QUIC_H 1
 
 #include "ruby.h"
+#include "ruby/encoding.h"
 
 #include <ngtcp2/ngtcp2.h>
 #include <ngtcp2/ngtcp2_crypto.h>

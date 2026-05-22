@@ -14,13 +14,18 @@ class TestQuic < Minitest::Test
   end
 
   def test_connection_client_initializes
-    client = Quic::Connection::Client.new(host: "example.com", port: 443)
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
     assert_instance_of Quic::Connection::Client, client
   end
 
-  def test_open_stream_is_not_implemented
-    client = Quic::Connection::Client.new(host: "example.com", port: 443)
-    assert_raises(NotImplementedError) { client.open_stream }
+  def test_open_bidi_stream_is_not_implemented
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    assert_raises(NotImplementedError) { client.open_bidi_stream }
+  end
+
+  def test_open_uni_stream_is_not_implemented
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    assert_raises(NotImplementedError) { client.open_uni_stream }
   end
 
   def test_transport_params_default_returns_data_instance
