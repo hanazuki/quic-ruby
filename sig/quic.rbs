@@ -1,4 +1,80 @@
 module Quic
   VERSION: String
-  # See the writing guide of rbs: https://github.com/ruby/rbs#guides
+
+  def self.library_versions: () -> { ngtcp2: String, openssl: String }
+
+  class Error < StandardError
+    attr_reader code: Integer?
+
+    class Proto < Error
+    end
+
+    class DropConn < Error
+    end
+
+    class Retry < Error
+    end
+
+    class Closed < Error
+    end
+
+    class CryptoError < Error
+    end
+
+    class HandshakeTimeout < Error
+    end
+
+    class FlowControl < Error
+    end
+
+    class Unknown < Error
+    end
+  end
+
+  class TransportParams < Data
+    attr_reader initial_max_stream_data_bidi_local: Integer
+    attr_reader initial_max_stream_data_bidi_remote: Integer
+    attr_reader initial_max_stream_data_uni: Integer
+    attr_reader initial_max_data: Integer
+    attr_reader initial_max_streams_bidi: Integer
+    attr_reader initial_max_streams_uni: Integer
+    attr_reader max_idle_timeout: Integer
+    attr_reader active_connection_id_limit: Integer
+
+    def self.default: () -> TransportParams
+  end
+
+  class Settings < Data
+    attr_reader cc_algo: Symbol
+    attr_reader initial_rtt: Integer
+    attr_reader max_window: Integer
+    attr_reader max_stream_window: Integer
+    attr_reader handshake_timeout: Integer
+    attr_reader no_pmtud: bool
+
+    def self.default: () -> Settings
+  end
+
+  module Connection
+    class Client
+      def self.new: (host: String, port: Integer, ?transport_params: TransportParams?, ?settings: Settings?) -> Client
+
+      def self._open: (
+        local_sockaddr: String,
+        remote_sockaddr: String,
+        server_name: String,
+        transport_params: TransportParams,
+        settings: Settings
+      ) -> Client
+
+      def open_bidi_stream: () -> Stream
+      def open_uni_stream: () -> Stream
+    end
+  end
+
+  class Stream
+    def initiator: () -> Symbol
+    def read: () -> String?
+    def write: (String data) -> Integer
+  end
 end
