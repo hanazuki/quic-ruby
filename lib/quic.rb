@@ -2,6 +2,8 @@
 
 require_relative "quic/version"
 require "quic/quic"
+require_relative "quic/transport_params"
+require_relative "quic/settings"
 require_relative "quic/connection"
 
 module Quic
