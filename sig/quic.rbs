@@ -69,6 +69,9 @@ module Quic
 
       def open_bidi_stream: () -> Stream
       def open_uni_stream: () -> Stream
+
+      def write_pkt: (?String? buffer) -> String?
+      def read_pkt: (String packet, local_sockaddr: String, remote_sockaddr: String) -> nil
     end
   end
 

@@ -51,4 +51,67 @@ class TestQuic < Minitest::Test
     assert_equal 2**30, tp.initial_max_data
     assert_equal 100, tp.initial_max_streams_bidi
   end
+
+  def test_write_pkt_returns_initial_packet
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    buf = client.write_pkt
+    refute_nil buf
+    assert_instance_of String, buf
+    assert_predicate buf.bytesize, :positive?
+    assert_equal Encoding::ASCII_8BIT, buf.encoding
+    assert_equal 0xc0, buf.unpack1("C") & 0xc0
+  end
+
+  def test_write_pkt_returns_nil_after_draining_initial_flight
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    packets = []
+    16.times do
+      pkt = client.write_pkt
+      break if pkt.nil?
+      packets << pkt
+    end
+    refute_empty packets, "expected at least one Initial packet from the first flight"
+    assert_nil client.write_pkt, "expected nil once the Initial flight is drained"
+  end
+
+  def test_write_pkt_reuses_provided_binary_buffer
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    buf = String.new(capacity: 1200, encoding: Encoding::BINARY)
+    assert_same buf, client.write_pkt(buf)
+  end
+
+  def test_write_pkt_raises_on_utf8_buffer
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    buf = String.new("", encoding: Encoding::UTF_8)
+    assert_raises(ArgumentError) { client.write_pkt(buf) }
+  end
+
+  def test_read_pkt_raises_on_utf8_packet
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    sockaddr = Addrinfo.udp("127.0.0.1", 0).to_sockaddr
+    utf8_packet = String.new("\x00", encoding: Encoding::UTF_8)
+    assert_raises(ArgumentError) do
+      client.read_pkt(utf8_packet, local_sockaddr: sockaddr, remote_sockaddr: sockaddr)
+    end
+  end
+
+  def test_read_pkt_raises_on_utf8_local_sockaddr
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    sockaddr = Addrinfo.udp("127.0.0.1", 0).to_sockaddr
+    binary_packet = String.new("\x00", encoding: Encoding::BINARY)
+    utf8_addr = String.new("invalid", encoding: Encoding::UTF_8)
+    assert_raises(ArgumentError) do
+      client.read_pkt(binary_packet, local_sockaddr: utf8_addr, remote_sockaddr: sockaddr)
+    end
+  end
+
+  def test_read_pkt_raises_on_utf8_remote_sockaddr
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    sockaddr = Addrinfo.udp("127.0.0.1", 0).to_sockaddr
+    binary_packet = String.new("\x00", encoding: Encoding::BINARY)
+    utf8_addr = String.new("invalid", encoding: Encoding::UTF_8)
+    assert_raises(ArgumentError) do
+      client.read_pkt(binary_packet, local_sockaddr: sockaddr, remote_sockaddr: utf8_addr)
+    end
+  end
 end

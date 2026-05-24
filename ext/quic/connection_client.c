@@ -7,6 +7,10 @@
 
 #include <openssl/rand.h>
 
+/* Buffer size for #write_pkt. NGTCP2_MAX_UDP_PAYLOAD_SIZE (1200) is the
+   minimum destlen ngtcp2 accepts. Revisit when PMTUD is enabled (Phase 3+). */
+#define QUIC_WRITE_PKT_BUFLEN NGTCP2_MAX_UDP_PAYLOAD_SIZE
+
 static int quic_crypto_initialized = 0;
 
 typedef struct {
@@ -15,6 +19,10 @@ typedef struct {
   SSL *ssl;
   ngtcp2_cid scid;
   ngtcp2_cid dcid;
+  /* ngtcp2 1.x requires applications to associate an ngtcp2_conn with the
+     TLS object via SSL_set_app_data so that crypto callbacks (e.g.
+     add_handshake_data) can recover the conn. The ref must outlive ssl. */
+  ngtcp2_crypto_conn_ref conn_ref;
 } quic_client_t;
 
 static void
@@ -78,6 +86,12 @@ quic_get_new_connection_id_cb(ngtcp2_conn *conn, ngtcp2_cid *cid,
     return NGTCP2_ERR_CALLBACK_FAILURE;
   }
   return 0;
+}
+
+static ngtcp2_conn *
+quic_client_get_conn(ngtcp2_crypto_conn_ref *conn_ref)
+{
+  return ((quic_client_t *)conn_ref->user_data)->conn;
 }
 
 static void
@@ -201,6 +215,13 @@ quic_client_open(int argc, VALUE *argv, VALUE klass)
   SSL_set_connect_state(c->ssl);
   SSL_set_tlsext_host_name(c->ssl, RSTRING_PTR(server_name));
 
+  /* Link the SSL handle back to this client so ngtcp2's crypto callbacks
+     (add_handshake_data, set_encryption_secrets, ...) can resolve the
+     ngtcp2_conn via SSL_get_app_data -> ngtcp2_crypto_conn_ref. */
+  c->conn_ref.get_conn = quic_client_get_conn;
+  c->conn_ref.user_data = c;
+  SSL_set_app_data(c->ssl, &c->conn_ref);
+
   c->scid.datalen = 8;
   if (RAND_bytes(c->scid.data, 8) != 1) {
     rb_raise(rb_eRuntimeError, "RAND_bytes(scid) failed");
@@ -250,10 +271,129 @@ quic_client_open(int argc, VALUE *argv, VALUE klass)
   return self;
 }
 
+static VALUE
+quic_client_write_pkt(int argc, VALUE *argv, VALUE self)
+{
+  VALUE buffer = Qnil;
+  rb_scan_args(argc, argv, "01", &buffer);
+
+  quic_client_t *c;
+  TypedData_Get_Struct(self, quic_client_t, &quic_client_data_type, c);
+
+  if (NIL_P(buffer)) {
+    /* rb_str_buf_new returns an ASCII-8BIT (binary) String per CRuby spec,
+       so no explicit rb_enc_associate is required. */
+    buffer = rb_str_buf_new(QUIC_WRITE_PKT_BUFLEN);
+  } else {
+    Check_Type(buffer, T_STRING);
+    if (rb_enc_get_index(buffer) != rb_ascii8bit_encindex()) {
+      rb_raise(rb_eArgError, "buffer must be ASCII-8BIT (binary) encoding");
+    }
+    if (RSTRING_LEN(buffer) < (long)QUIC_WRITE_PKT_BUFLEN) {
+      rb_str_modify_expand(buffer, (long)QUIC_WRITE_PKT_BUFLEN - RSTRING_LEN(buffer));
+    }
+  }
+
+  ngtcp2_path_storage path_storage;
+  ngtcp2_path_storage_zero(&path_storage);
+
+  ngtcp2_pkt_info pi;
+  memset(&pi, 0, sizeof(pi));
+
+  uint8_t *dest = (uint8_t *)RSTRING_PTR(buffer);
+  size_t destlen = (size_t)QUIC_WRITE_PKT_BUFLEN;
+
+  ngtcp2_ssize n = ngtcp2_conn_write_pkt(c->conn, &path_storage.path, &pi,
+                                         dest, destlen, quic_now());
+  if (n < 0) {
+    /* ngtcp2 does not partially write on failure, but truncate explicitly so
+       that a rescued caller cannot accidentally transmit stale bytes. */
+    rb_str_set_len(buffer, 0);
+    quic_raise_ngtcp2_error((int)n);
+  }
+  if (n == 0) {
+    rb_str_set_len(buffer, 0);
+    return Qnil;
+  }
+  rb_str_set_len(buffer, n);
+  return buffer;
+}
+
+struct quic_read_pkt_args {
+  quic_client_t *c;
+  VALUE packet;
+  ngtcp2_path path;
+  ngtcp2_pkt_info pi;
+};
+
+static VALUE
+quic_read_pkt_body(VALUE arg)
+{
+  struct quic_read_pkt_args *a = (struct quic_read_pkt_args *)arg;
+  int rv = ngtcp2_conn_read_pkt(a->c->conn, &a->path, &a->pi,
+                                (const uint8_t *)RSTRING_PTR(a->packet),
+                                (size_t)RSTRING_LEN(a->packet),
+                                quic_now());
+  if (rv != 0) {
+    /* NORETURN: longjmp passes through rb_ensure so unlock still fires. */
+    quic_raise_ngtcp2_error(rv);
+  }
+  return Qnil;
+}
+
+static VALUE
+quic_read_pkt_unlock(VALUE arg)
+{
+  rb_str_unlocktmp(((struct quic_read_pkt_args *)arg)->packet);
+  return Qnil;
+}
+
+static VALUE
+quic_client_read_pkt(int argc, VALUE *argv, VALUE self)
+{
+  VALUE packet = Qnil;
+  VALUE opts = Qnil;
+  rb_scan_args(argc, argv, "1:", &packet, &opts);
+
+  if (NIL_P(opts)) {
+    rb_raise(rb_eArgError, "missing keywords: local_sockaddr, remote_sockaddr");
+  }
+
+  VALUE local_sockaddr  = rb_hash_aref(opts, ID2SYM(rb_intern("local_sockaddr")));
+  VALUE remote_sockaddr = rb_hash_aref(opts, ID2SYM(rb_intern("remote_sockaddr")));
+
+  if (NIL_P(local_sockaddr) || NIL_P(remote_sockaddr)) {
+    rb_raise(rb_eArgError, "missing keywords: local_sockaddr, remote_sockaddr");
+  }
+
+  quic_require_binary(packet,          "packet");
+  quic_require_binary(local_sockaddr,  "local_sockaddr");
+  quic_require_binary(remote_sockaddr, "remote_sockaddr");
+
+  quic_client_t *c;
+  TypedData_Get_Struct(self, quic_client_t, &quic_client_data_type, c);
+
+  struct quic_read_pkt_args args;
+  args.c = c;
+  args.packet = packet;
+  args.path.local.addr     = (struct sockaddr *)RSTRING_PTR(local_sockaddr);
+  args.path.local.addrlen  = (ngtcp2_socklen)RSTRING_LEN(local_sockaddr);
+  args.path.remote.addr    = (struct sockaddr *)RSTRING_PTR(remote_sockaddr);
+  args.path.remote.addrlen = (ngtcp2_socklen)RSTRING_LEN(remote_sockaddr);
+  args.path.user_data      = NULL;
+  memset(&args.pi, 0, sizeof(args.pi));
+
+  rb_str_locktmp(packet);
+  return rb_ensure(quic_read_pkt_body, (VALUE)&args,
+                   quic_read_pkt_unlock, (VALUE)&args);
+}
+
 void
 Init_quic_connection_client(VALUE rb_mQuicConnectionArg)
 {
   rb_cQuicConnectionClient = rb_define_class_under(rb_mQuicConnectionArg, "Client", rb_cObject);
   rb_define_alloc_func(rb_cQuicConnectionClient, quic_client_alloc);
   rb_define_singleton_method(rb_cQuicConnectionClient, "_open", quic_client_open, -1);
+  rb_define_method(rb_cQuicConnectionClient, "write_pkt", quic_client_write_pkt, -1);
+  rb_define_method(rb_cQuicConnectionClient, "read_pkt",  quic_client_read_pkt,  -1);
 }
