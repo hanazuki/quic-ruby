@@ -121,6 +121,33 @@ class TestQuic < Minitest::Test
     assert_equal ["h3"], settings.alpn
   end
 
+  def test_handshake_completed_is_false_initially
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    assert_equal false, client.handshake_completed?
+  end
+
+  def test_in_closing_period_is_false_initially
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    assert_equal false, client.in_closing_period?
+  end
+
+  def test_in_draining_period_is_false_initially
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    assert_equal false, client.in_draining_period?
+  end
+
+  def test_expiry_returns_integer_after_init
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    expiry = client.expiry
+    assert_kind_of Integer, expiry
+    assert_predicate expiry, :positive?
+  end
+
+  def test_handle_expiry_does_not_raise_after_init
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    assert_nil client.handle_expiry
+  end
+
   def test_alpn_with_h3_does_not_raise_during_open
     settings = Quic::Settings.default.with(alpn: ["h3"])
     client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443, settings: settings)

@@ -8,7 +8,7 @@
 #include <openssl/rand.h>
 
 /* Buffer size for #write_pkt. NGTCP2_MAX_UDP_PAYLOAD_SIZE (1200) is the
-   minimum destlen ngtcp2 accepts. Revisit when PMTUD is enabled (Phase 3+). */
+   minimum destlen ngtcp2 accepts. Revisit when PMTUD is enabled (Phase 4+). */
 #define QUIC_WRITE_PKT_BUFLEN NGTCP2_MAX_UDP_PAYLOAD_SIZE
 
 static int quic_crypto_initialized = 0;
@@ -419,6 +419,52 @@ quic_client_read_pkt(int argc, VALUE *argv, VALUE self)
                    quic_read_pkt_unlock, (VALUE)&args);
 }
 
+static VALUE
+quic_client_handshake_completed_p(VALUE self)
+{
+  quic_client_t *c;
+  TypedData_Get_Struct(self, quic_client_t, &quic_client_data_type, c);
+  return ngtcp2_conn_get_handshake_completed(c->conn) ? Qtrue : Qfalse;
+}
+
+static VALUE
+quic_client_in_closing_period_p(VALUE self)
+{
+  quic_client_t *c;
+  TypedData_Get_Struct(self, quic_client_t, &quic_client_data_type, c);
+  return ngtcp2_conn_in_closing_period(c->conn) ? Qtrue : Qfalse;
+}
+
+static VALUE
+quic_client_in_draining_period_p(VALUE self)
+{
+  quic_client_t *c;
+  TypedData_Get_Struct(self, quic_client_t, &quic_client_data_type, c);
+  return ngtcp2_conn_in_draining_period(c->conn) ? Qtrue : Qfalse;
+}
+
+static VALUE
+quic_client_expiry(VALUE self)
+{
+  quic_client_t *c;
+  TypedData_Get_Struct(self, quic_client_t, &quic_client_data_type, c);
+  ngtcp2_tstamp t = ngtcp2_conn_get_expiry(c->conn);
+  if (t == UINT64_MAX) return Qnil;
+  return ULL2NUM((unsigned long long)t);
+}
+
+/* Caller is responsible for ordering with #read_pkt / #write_pkt:
+   read_pkt or handle_expiry to advance ngtcp2 state, then write_pkt to flush. */
+static VALUE
+quic_client_handle_expiry(VALUE self)
+{
+  quic_client_t *c;
+  TypedData_Get_Struct(self, quic_client_t, &quic_client_data_type, c);
+  int rv = ngtcp2_conn_handle_expiry(c->conn, quic_now());
+  if (rv != 0) quic_raise_ngtcp2_error(rv);
+  return Qnil;
+}
+
 void
 Init_quic_connection_client(VALUE rb_mQuicConnectionArg)
 {
@@ -427,4 +473,9 @@ Init_quic_connection_client(VALUE rb_mQuicConnectionArg)
   rb_define_singleton_method(rb_cQuicConnectionClient, "_open", quic_client_open, -1);
   rb_define_method(rb_cQuicConnectionClient, "write_pkt", quic_client_write_pkt, -1);
   rb_define_method(rb_cQuicConnectionClient, "read_pkt",  quic_client_read_pkt,  -1);
+  rb_define_method(rb_cQuicConnectionClient, "expiry", quic_client_expiry, 0);
+  rb_define_method(rb_cQuicConnectionClient, "handle_expiry", quic_client_handle_expiry, 0);
+  rb_define_method(rb_cQuicConnectionClient, "handshake_completed?", quic_client_handshake_completed_p, 0);
+  rb_define_method(rb_cQuicConnectionClient, "in_closing_period?", quic_client_in_closing_period_p, 0);
+  rb_define_method(rb_cQuicConnectionClient, "in_draining_period?", quic_client_in_draining_period_p, 0);
 }

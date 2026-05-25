@@ -73,6 +73,12 @@ module Quic
 
       def write_pkt: (?String? buffer) -> String?
       def read_pkt: (String packet, local_sockaddr: String, remote_sockaddr: String) -> nil
+
+      def expiry: () -> Integer?
+      def handle_expiry: () -> nil
+      def handshake_completed?: () -> bool
+      def in_closing_period?: () -> bool
+      def in_draining_period?: () -> bool
     end
   end
 
