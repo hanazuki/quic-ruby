@@ -44,6 +44,9 @@ quic_raise_ngtcp2_error(int rv)
     case NGTCP2_ERR_DRAINING:
       cls = rb_eQuicErrorClosed;
       break;
+    case NGTCP2_ERR_IDLE_CLOSE:
+      cls = rb_eQuicErrorClosed;
+      break;
     case NGTCP2_ERR_CRYPTO:
       cls = rb_eQuicErrorCryptoError;
       break;
