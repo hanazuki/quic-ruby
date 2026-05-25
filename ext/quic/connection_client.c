@@ -215,6 +215,37 @@ quic_client_open(int argc, VALUE *argv, VALUE klass)
   SSL_set_connect_state(c->ssl);
   SSL_set_tlsext_host_name(c->ssl, RSTRING_PTR(server_name));
 
+  VALUE alpn_ary = rb_funcall(settings_v, rb_intern("alpn"), 0);
+  Check_Type(alpn_ary, T_ARRAY);
+  long n_alpn = RARRAY_LEN(alpn_ary);
+  if (n_alpn > 0) {
+    /* RFC 7301 wire format: 1-byte length prefix + bytes, concatenated. */
+    size_t total = 0;
+    for (long i = 0; i < n_alpn; i++) {
+      VALUE entry = RARRAY_AREF(alpn_ary, i);
+      Check_Type(entry, T_STRING);
+      long len = RSTRING_LEN(entry);
+      if (len < 1 || len > 255) {
+        rb_raise(rb_eArgError, "alpn entry must be 1-255 bytes (got %ld)", len);
+      }
+      total += 1 + (size_t)len;
+    }
+    /* total <= 256 * 256 = 65536; ALLOCA_N is safe at this size. */
+    unsigned char *wire = ALLOCA_N(unsigned char, total);
+    unsigned char *p = wire;
+    for (long i = 0; i < n_alpn; i++) {
+      VALUE entry = RARRAY_AREF(alpn_ary, i);
+      long len = RSTRING_LEN(entry);
+      *p++ = (unsigned char)len;
+      memcpy(p, RSTRING_PTR(entry), (size_t)len);
+      p += len;
+    }
+    /* SSL_set_alpn_protos returns 0 on success (counter-intuitive). */
+    if (SSL_set_alpn_protos(c->ssl, wire, (unsigned int)total) != 0) {
+      rb_raise(rb_eRuntimeError, "SSL_set_alpn_protos failed");
+    }
+  }
+
   /* Link the SSL handle back to this client so ngtcp2's crypto callbacks
      (add_handshake_data, set_encryption_secrets, ...) can resolve the
      ngtcp2_conn via SSL_get_app_data -> ngtcp2_crypto_conn_ref. */

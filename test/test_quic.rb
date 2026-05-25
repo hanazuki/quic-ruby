@@ -44,6 +44,7 @@ class TestQuic < Minitest::Test
     assert_equal :cubic, settings.cc_algo
     assert_equal 10_000_000_000, settings.handshake_timeout
     assert_equal false, settings.no_pmtud
+    assert_equal [], settings.alpn
   end
 
   def test_transport_params_with_overrides_one_field
@@ -113,5 +114,16 @@ class TestQuic < Minitest::Test
     assert_raises(ArgumentError) do
       client.read_pkt(binary_packet, local_sockaddr: sockaddr, remote_sockaddr: utf8_addr)
     end
+  end
+
+  def test_settings_with_alpn_overrides_value
+    settings = Quic::Settings.default.with(alpn: ["h3"])
+    assert_equal ["h3"], settings.alpn
+  end
+
+  def test_alpn_with_h3_does_not_raise_during_open
+    settings = Quic::Settings.default.with(alpn: ["h3"])
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443, settings: settings)
+    assert_instance_of Quic::Connection::Client, client
   end
 end

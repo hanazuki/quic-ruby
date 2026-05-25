@@ -51,6 +51,7 @@ module Quic
     attr_reader max_stream_window: Integer
     attr_reader handshake_timeout: Integer
     attr_reader no_pmtud: bool
+    attr_reader alpn: Array[String]
 
     def self.default: () -> Settings
   end

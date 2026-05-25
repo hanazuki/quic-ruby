@@ -7,7 +7,8 @@ module Quic
     :max_window,
     :max_stream_window,
     :handshake_timeout,
-    :no_pmtud
+    :no_pmtud,
+    :alpn
   )
 
   class Settings
@@ -18,7 +19,8 @@ module Quic
         max_window: 0,
         max_stream_window: 0,
         handshake_timeout: 10_000_000_000,
-        no_pmtud: false
+        no_pmtud: false,
+        alpn: []
       )
     end
   end
