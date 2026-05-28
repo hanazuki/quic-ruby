@@ -227,4 +227,34 @@ class TestQuic < Minitest::Test
       sock.close
     end
   end
+
+  # Build a Stream whose @client is a real (handshake-incomplete) Client so
+  # the flow control window check kicks in. ngtcp2 reports
+  # max_stream_data_left = 0 for unopened streams, which is exactly the
+  # condition Stream#write_nonblock should turn into Quic::Error::WaitWritable.
+  def test_stream_write_nonblock_raises_wait_writable_when_window_zero
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    stream = Quic::Stream.allocate
+    stream.instance_variable_set(:@id, 0)
+    stream.instance_variable_set(:@client, client)
+    stream.instance_variable_set(:@pending_chunks, [])
+    stream.instance_variable_set(:@recv_buffer, String.new(encoding: Encoding::BINARY))
+
+    err = assert_raises(Quic::Error::WaitWritable) { stream.write_nonblock("x") }
+    assert_kind_of IO::WaitWritable, err
+  end
+
+  # Stream#write blocks by repeatedly calling @client.pump_once, which in
+  # turn raises Quic::Error::NotBound when no socket has been bound. We
+  # surface that error verbatim from #write.
+  def test_stream_write_raises_not_bound_when_client_not_bound
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    stream = Quic::Stream.allocate
+    stream.instance_variable_set(:@id, 0)
+    stream.instance_variable_set(:@client, client)
+    stream.instance_variable_set(:@pending_chunks, [])
+    stream.instance_variable_set(:@recv_buffer, String.new(encoding: Encoding::BINARY))
+
+    assert_raises(Quic::Error::NotBound) { stream.write("x") }
+  end
 end

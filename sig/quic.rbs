@@ -114,7 +114,19 @@ module Quic
     def initiator: () -> Symbol
     def read: (?Integer? length) -> String?
     def read_nonblock: (Integer length) -> String
+
+    # Blocks (by internally calling Client#pump_once) until the peer's flow
+    # control window has room for the full payload, then queues all bytes
+    # and returns data.bytesize. Requires the parent Client to be bound to
+    # a socket via Client#bind; raises Quic::Error::NotBound otherwise.
     def write: (String data, ?fin: bool) -> Integer
+
+    # Non-blocking variant. Queues as much of `data` as the current flow
+    # control window allows and returns the byte count actually queued.
+    # Raises Quic::Error::WaitWritable (mixed in with IO::WaitWritable) when
+    # the window is zero and the payload is non-empty. If only a partial
+    # prefix is accepted, `fin: true` is NOT propagated; the caller must
+    # re-issue with `fin: true` on the trailing chunk.
     def write_nonblock: (String data, ?fin: bool) -> Integer
     def eof?: () -> bool
     def close_write: () -> nil

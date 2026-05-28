@@ -49,12 +49,11 @@ quic_stream_new(int64_t stream_id, VALUE client)
 }
 
 /* Append a binary copy of |data| to @pending_chunks and optionally set the
-   fin_sent flag. Phase 4 does not enforce flow-control window: this always
-   succeeds and returns data.bytesize without ever blocking, even though the
-   spec calls for #write to block once the window is exceeded. The blocking
-   variant is deferred to Phase 5+ together with proper window tracking via
-   ngtcp2_conn_get_max_stream_data. See Updates in the spec for the
-   rationale. */
+   fin_sent flag. Flow control is the caller's concern (#write blocks in
+   quic_stream_write_m and #write_nonblock returns a partial byte count in
+   quic_stream_write_nonblock_m). This helper is reached only after the
+   caller has confirmed the bytes fit in the current send window, so it
+   never raises Quic::Error::WaitWritable on its own. */
 static VALUE
 quic_stream_enqueue(VALUE self, VALUE data, bool fin)
 {
@@ -97,24 +96,89 @@ quic_stream_fin_kwarg(int argc, VALUE *argv, VALUE *data)
   return RTEST(fin);
 }
 
+/* Return the effective send window for this stream, capped by both the
+   per-stream and the per-connection flow control limits ngtcp2 tracks. */
+static uint64_t
+quic_stream_window_left(VALUE client_v, quic_stream_t *s)
+{
+  ngtcp2_conn *conn = quic_client_conn(client_v);
+  uint64_t stream_left = ngtcp2_conn_get_max_stream_data_left(conn, s->stream_id);
+  uint64_t conn_left = ngtcp2_conn_get_max_data_left(conn);
+  return stream_left < conn_left ? stream_left : conn_left;
+}
+
+/* Blocking write: block by repeatedly invoking Client#pump_once until the
+   peer's flow control window has enough room for the full payload, then
+   enqueue. IO#write-compatible: always queues all of `data`. Bare Streams
+   (built via Quic::Stream.allocate for unit tests, with @client = nil) skip
+   the window check entirely. */
 static VALUE
 quic_stream_write_m(int argc, VALUE *argv, VALUE self)
 {
   VALUE data;
   bool fin = quic_stream_fin_kwarg(argc, argv, &data);
+
+  VALUE client_v = rb_ivar_get(self, rb_intern("@client"));
+  if (NIL_P(client_v)) {
+    return quic_stream_enqueue(self, data, fin);  /* bare-Stream test escape */
+  }
+
+  /* These will be re-validated by quic_stream_enqueue, but we need the
+     length up-front to drive the window loop. */
+  Check_Type(data, T_STRING);
+  long needed = RSTRING_LEN(data);
+
+  if (needed > 0) {
+    quic_stream_t *s;
+    TypedData_Get_Struct(self, quic_stream_t, &quic_stream_data_type, s);
+    /* Loop until the full payload would fit in the current window. pump_once
+       raises Quic::Error::NotBound if @client has no socket bound; that
+       error surfaces verbatim. */
+    while ((uint64_t)needed > quic_stream_window_left(client_v, s)) {
+      rb_funcall(client_v, rb_intern("pump_once"), 0);
+    }
+  }
+
   return quic_stream_enqueue(self, data, fin);
 }
 
-/* Phase 4 minimum: write_nonblock has identical behavior to write because we
-   never block on flow control (see Updates). Once the blocking #write gets a
-   real pump loop in Phase 5+, this will diverge: write_nonblock will return
-   partial bytes and raise Quic::Error::WaitWritable when the window is full. */
+/* Non-blocking write: enqueue at most `window_left` bytes from `data` and
+   return the count actually queued. Raises Quic::Error::WaitWritable if the
+   window is zero and we have a non-empty payload to send. If only a partial
+   prefix fits, FIN is NOT set on this call (caller re-issues with
+   `fin: true` once the remainder is accepted) so we don't half-commit FIN.
+   Bare Streams with @client = nil skip the window check entirely. */
 static VALUE
 quic_stream_write_nonblock_m(int argc, VALUE *argv, VALUE self)
 {
   VALUE data;
   bool fin = quic_stream_fin_kwarg(argc, argv, &data);
-  return quic_stream_enqueue(self, data, fin);
+
+  VALUE client_v = rb_ivar_get(self, rb_intern("@client"));
+  if (NIL_P(client_v)) {
+    return quic_stream_enqueue(self, data, fin);  /* bare-Stream test escape */
+  }
+
+  Check_Type(data, T_STRING);
+  long needed = RSTRING_LEN(data);
+
+  if (needed == 0) {
+    /* fin-only call (or zero-byte write); no window concern. */
+    return quic_stream_enqueue(self, data, fin);
+  }
+
+  quic_stream_t *s;
+  TypedData_Get_Struct(self, quic_stream_t, &quic_stream_data_type, s);
+  uint64_t avail = quic_stream_window_left(client_v, s);
+
+  if (avail == 0) {
+    rb_raise(rb_eQuicErrorWaitWritable, "stream send window is full");
+  }
+
+  long take = ((uint64_t)needed <= avail) ? needed : (long)avail;
+  bool effective_fin = (take == needed) ? fin : false;
+  VALUE slice = (take == needed) ? data : rb_str_new(RSTRING_PTR(data), take);
+  return quic_stream_enqueue(self, slice, effective_fin);
 }
 
 static VALUE
