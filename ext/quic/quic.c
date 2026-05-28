@@ -1,4 +1,5 @@
 #include "quic.h"
+#include "stream.h"
 
 VALUE rb_mQuic;
 VALUE rb_mQuicConnection;
@@ -13,6 +14,11 @@ VALUE rb_eQuicErrorCryptoError;
 VALUE rb_eQuicErrorHandshakeTimeout;
 VALUE rb_eQuicErrorFlowControl;
 VALUE rb_eQuicErrorUnknown;
+VALUE rb_eQuicErrorWaitReadable;
+VALUE rb_eQuicErrorWaitWritable;
+VALUE rb_eQuicErrorStreamClosed;
+VALUE rb_eQuicErrorStreamReset;
+VALUE rb_eQuicErrorNotBound;
 
 static VALUE
 quic_library_versions(VALUE self)
@@ -56,6 +62,9 @@ quic_raise_ngtcp2_error(int rv)
     case NGTCP2_ERR_STREAM_DATA_BLOCKED:
       cls = rb_eQuicErrorFlowControl;
       break;
+    case NGTCP2_ERR_STREAM_SHUT_WR:
+      cls = rb_eQuicErrorStreamClosed;
+      break;
     default:
       cls = rb_eQuicErrorUnknown;
       break;
@@ -86,5 +95,20 @@ Init_quic(void)
   rb_eQuicErrorFlowControl = rb_define_class_under(rb_eQuicError, "FlowControl", rb_eQuicError);
   rb_eQuicErrorUnknown = rb_define_class_under(rb_eQuicError, "Unknown", rb_eQuicError);
 
+  /* IO-style non-blocking errors. Mix in the standard IO::Wait{Readable,Writable}
+     modules so callers can `rescue IO::WaitReadable` (or the Quic subclass)
+     interchangeably with stdlib IO objects. */
+  VALUE io_wait_readable = rb_const_get(rb_cIO, rb_intern("WaitReadable"));
+  VALUE io_wait_writable = rb_const_get(rb_cIO, rb_intern("WaitWritable"));
+  rb_eQuicErrorWaitReadable = rb_define_class_under(rb_eQuicError, "WaitReadable", rb_eQuicError);
+  rb_include_module(rb_eQuicErrorWaitReadable, io_wait_readable);
+  rb_eQuicErrorWaitWritable = rb_define_class_under(rb_eQuicError, "WaitWritable", rb_eQuicError);
+  rb_include_module(rb_eQuicErrorWaitWritable, io_wait_writable);
+
+  rb_eQuicErrorStreamClosed = rb_define_class_under(rb_eQuicError, "StreamClosed", rb_eQuicError);
+  rb_eQuicErrorStreamReset = rb_define_class_under(rb_eQuicError, "StreamReset", rb_eQuicError);
+  rb_eQuicErrorNotBound = rb_define_class_under(rb_eQuicError, "NotBound", rb_eQuicError);
+
   Init_quic_connection_client(rb_mQuicConnection);
+  Init_quic_stream(rb_mQuic);
 }

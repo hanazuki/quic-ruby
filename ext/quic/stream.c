@@ -1,0 +1,220 @@
+#include "stream.h"
+
+#include <string.h>
+
+VALUE rb_cQuicStream;
+
+static void
+quic_stream_free(void *ptr)
+{
+  xfree(ptr);
+}
+
+static size_t
+quic_stream_size(const void *ptr)
+{
+  (void)ptr;
+  return sizeof(quic_stream_t);
+}
+
+const rb_data_type_t quic_stream_data_type = {
+  "Quic::Stream",
+  {NULL, quic_stream_free, quic_stream_size,},
+  NULL, NULL,
+  RUBY_TYPED_FREE_IMMEDIATELY,
+};
+
+static VALUE
+quic_stream_alloc(VALUE klass)
+{
+  quic_stream_t *s = ALLOC(quic_stream_t);
+  memset(s, 0, sizeof(*s));
+  return TypedData_Wrap_Struct(klass, &quic_stream_data_type, s);
+}
+
+VALUE
+quic_stream_new(int64_t stream_id, VALUE client)
+{
+  VALUE self = quic_stream_alloc(rb_cQuicStream);
+  quic_stream_t *s;
+  TypedData_Get_Struct(self, quic_stream_t, &quic_stream_data_type, s);
+  s->stream_id = stream_id;
+
+  rb_ivar_set(self, rb_intern("@id"), LL2NUM(stream_id));
+  rb_ivar_set(self, rb_intern("@client"), client);
+  rb_ivar_set(self, rb_intern("@pending_chunks"), rb_ary_new());
+  /* recv_buffer is a binary String; rb_str_buf_new returns ASCII-8BIT. */
+  rb_ivar_set(self, rb_intern("@recv_buffer"), rb_str_buf_new(0));
+  return self;
+}
+
+/* Append a binary copy of |data| to @pending_chunks and optionally set the
+   fin_sent flag. Phase 4 does not enforce flow-control window: this always
+   succeeds and returns data.bytesize without ever blocking, even though the
+   spec calls for #write to block once the window is exceeded. The blocking
+   variant is deferred to Phase 5+ together with proper window tracking via
+   ngtcp2_conn_get_max_stream_data. See Updates in the spec for the
+   rationale. */
+static VALUE
+quic_stream_enqueue(VALUE self, VALUE data, bool fin)
+{
+  quic_stream_t *s;
+  TypedData_Get_Struct(self, quic_stream_t, &quic_stream_data_type, s);
+
+  if (s->reset || s->closed) {
+    rb_raise(rb_eQuicErrorStreamClosed, "stream is closed");
+  }
+  if (s->fin_sent) {
+    rb_raise(rb_eQuicErrorStreamClosed, "stream FIN already sent");
+  }
+
+  Check_Type(data, T_STRING);
+  long len = RSTRING_LEN(data);
+
+  if (len > 0) {
+    VALUE chunk = rb_str_new(RSTRING_PTR(data), len);
+    /* rb_str_new returns ASCII-8BIT, so no encoding adjustment is needed.
+       Force it explicitly to be defensive against future CRuby changes. */
+    rb_enc_associate_index(chunk, rb_ascii8bit_encindex());
+    VALUE pending = rb_ivar_get(self, rb_intern("@pending_chunks"));
+    rb_ary_push(pending, chunk);
+  }
+
+  if (fin) {
+    s->fin_sent = true;
+  }
+
+  return LONG2NUM(len);
+}
+
+static bool
+quic_stream_fin_kwarg(int argc, VALUE *argv, VALUE *data)
+{
+  VALUE opts = Qnil;
+  rb_scan_args(argc, argv, "1:", data, &opts);
+  if (NIL_P(opts)) return false;
+  VALUE fin = rb_hash_lookup(opts, ID2SYM(rb_intern("fin")));
+  return RTEST(fin);
+}
+
+static VALUE
+quic_stream_write_m(int argc, VALUE *argv, VALUE self)
+{
+  VALUE data;
+  bool fin = quic_stream_fin_kwarg(argc, argv, &data);
+  return quic_stream_enqueue(self, data, fin);
+}
+
+/* Phase 4 minimum: write_nonblock has identical behavior to write because we
+   never block on flow control (see Updates). Once the blocking #write gets a
+   real pump loop in Phase 5+, this will diverge: write_nonblock will return
+   partial bytes and raise Quic::Error::WaitWritable when the window is full. */
+static VALUE
+quic_stream_write_nonblock_m(int argc, VALUE *argv, VALUE self)
+{
+  VALUE data;
+  bool fin = quic_stream_fin_kwarg(argc, argv, &data);
+  return quic_stream_enqueue(self, data, fin);
+}
+
+static VALUE
+quic_stream_close_write_m(VALUE self)
+{
+  quic_stream_t *s;
+  TypedData_Get_Struct(self, quic_stream_t, &quic_stream_data_type, s);
+  if (s->fin_sent) return Qnil;  /* idempotent */
+  VALUE empty = rb_str_new("", 0);
+  rb_enc_associate_index(empty, rb_ascii8bit_encindex());
+  quic_stream_enqueue(self, empty, true);
+  return Qnil;
+}
+
+/* Pull up to |length| bytes from the head of @recv_buffer and return them
+   as a new binary String. The buffer is mutated in place (left-shifted)
+   to drop the returned prefix.
+
+   - buffer empty + fin_received: raise EOFError (IO#read_nonblock semantics)
+   - buffer empty + !fin_received: raise Quic::Error::WaitReadable
+   - buffer non-empty: return min(length, buffer.bytesize) bytes
+*/
+static VALUE
+quic_stream_read_nonblock_m(VALUE self, VALUE length_v)
+{
+  quic_stream_t *s;
+  TypedData_Get_Struct(self, quic_stream_t, &quic_stream_data_type, s);
+
+  long length = NUM2LONG(length_v);
+  if (length < 0) {
+    rb_raise(rb_eArgError, "negative length %ld given", length);
+  }
+
+  VALUE buffer = rb_ivar_get(self, rb_intern("@recv_buffer"));
+  long have = RSTRING_LEN(buffer);
+  if (have == 0) {
+    if (s->fin_received) {
+      rb_raise(rb_eEOFError, "end of file reached");
+    }
+    rb_raise(rb_eQuicErrorWaitReadable, "no data available");
+  }
+
+  long take = (length < have) ? length : have;
+  VALUE out = rb_str_new(RSTRING_PTR(buffer), take);
+  rb_enc_associate_index(out, rb_ascii8bit_encindex());
+
+  /* Drop the first |take| bytes from buffer by memmove + truncate. */
+  if (take < have) {
+    memmove(RSTRING_PTR(buffer), RSTRING_PTR(buffer) + take, (size_t)(have - take));
+  }
+  rb_str_set_len(buffer, have - take);
+
+  return out;
+}
+
+static VALUE
+quic_stream_eof_p(VALUE self)
+{
+  quic_stream_t *s;
+  TypedData_Get_Struct(self, quic_stream_t, &quic_stream_data_type, s);
+  VALUE buffer = rb_ivar_get(self, rb_intern("@recv_buffer"));
+  return (RSTRING_LEN(buffer) == 0 && s->fin_received) ? Qtrue : Qfalse;
+}
+
+static VALUE
+quic_stream_close_read_m(VALUE self)
+{
+  quic_stream_t *s;
+  TypedData_Get_Struct(self, quic_stream_t, &quic_stream_data_type, s);
+
+  VALUE client_v = rb_ivar_get(self, rb_intern("@client"));
+  ngtcp2_conn *conn = quic_client_conn(client_v);
+
+  /* ngtcp2_conn_shutdown_stream_read sends STOP_SENDING. app_error_code 0
+     since no Quic-level error API is exposed yet. */
+  int rv = ngtcp2_conn_shutdown_stream_read(conn, 0, s->stream_id, 0);
+  if (rv != 0) quic_raise_ngtcp2_error(rv);
+  return Qnil;
+}
+
+static VALUE
+quic_stream_close_m(VALUE self)
+{
+  /* Send FIN (if not yet) then STOP_SENDING. Idempotent on each leg. */
+  quic_stream_close_write_m(self);
+  quic_stream_close_read_m(self);
+  return Qnil;
+}
+
+void
+Init_quic_stream(VALUE rb_mQuicArg)
+{
+  rb_cQuicStream = rb_define_class_under(rb_mQuicArg, "Stream", rb_cObject);
+  rb_define_alloc_func(rb_cQuicStream, quic_stream_alloc);
+  rb_define_method(rb_cQuicStream, "write", quic_stream_write_m, -1);
+  rb_define_method(rb_cQuicStream, "write_nonblock", quic_stream_write_nonblock_m, -1);
+  rb_define_method(rb_cQuicStream, "close_write", quic_stream_close_write_m, 0);
+  rb_define_method(rb_cQuicStream, "read_nonblock", quic_stream_read_nonblock_m, 1);
+  rb_define_method(rb_cQuicStream, "eof?", quic_stream_eof_p, 0);
+  rb_define_method(rb_cQuicStream, "close_read", quic_stream_close_read_m, 0);
+  rb_define_method(rb_cQuicStream, "close", quic_stream_close_m, 0);
+  /* #read (blocking) and #initiator are defined in lib/quic/stream.rb. */
+}
