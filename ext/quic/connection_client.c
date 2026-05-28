@@ -1,4 +1,5 @@
 #include "quic.h"
+#include "stream.h"
 
 #include <netinet/in.h>
 #include <string.h>
@@ -23,6 +24,13 @@ typedef struct {
      TLS object via SSL_set_app_data so that crypto callbacks (e.g.
      add_handshake_data) can recover the conn. The ref must outlive ssl. */
   ngtcp2_crypto_conn_ref conn_ref;
+  /* Back-reference to the Quic::Connection::Client Ruby object that owns
+     this struct. ngtcp2 stream callbacks receive a void* user_data equal
+     to this struct, and they look up @streams via owner. We are stored
+     INSIDE owner via TypedData_Wrap_Struct, so owner is guaranteed alive
+     while we exist (no dmark needed). GC.compact may relocate owner and
+     leave this field stale; a dcompact slot is a Phase 5 follow-up. */
+  VALUE owner;
 } quic_client_t;
 
 static void
@@ -55,6 +63,14 @@ quic_client_alloc(VALUE klass)
   quic_client_t *c = ALLOC(quic_client_t);
   memset(c, 0, sizeof(*c));
   return TypedData_Wrap_Struct(klass, &quic_client_data_type, c);
+}
+
+ngtcp2_conn *
+quic_client_conn(VALUE client_v)
+{
+  quic_client_t *c;
+  TypedData_Get_Struct(client_v, quic_client_t, &quic_client_data_type, c);
+  return c->conn;
 }
 
 static ngtcp2_tstamp
@@ -161,6 +177,137 @@ quic_fill_settings(ngtcp2_settings *settings, VALUE st)
   settings->no_pmtud = RTEST(no_pmtud) ? 1 : 0;
 }
 
+/* Shared helper: look up the Quic::Stream registered for stream_id in the
+   owner Client's @streams Hash. Returns Qnil if not found (which can happen
+   if the stream was already removed by a previous stream_close callback). */
+static VALUE
+quic_client_lookup_stream(quic_client_t *c, int64_t stream_id)
+{
+  VALUE streams = rb_ivar_get(c->owner, rb_intern("@streams"));
+  return rb_hash_aref(streams, LL2NUM(stream_id));
+}
+
+/* ngtcp2 stream callbacks. Each returns 0 on success or
+   NGTCP2_ERR_CALLBACK_FAILURE on Ruby-side errors. We assume rb_str_buf_cat /
+   rb_ary_* won't raise in normal operation (allocation failures aside, which
+   would abort the process anyway), so we don't wrap in rb_protect for now. */
+
+static int
+quic_stream_open_cb(ngtcp2_conn *conn, int64_t stream_id, void *user_data)
+{
+  (void)conn;
+  quic_client_t *c = (quic_client_t *)user_data;
+  VALUE streams = rb_ivar_get(c->owner, rb_intern("@streams"));
+  if (!NIL_P(rb_hash_aref(streams, LL2NUM(stream_id)))) {
+    return 0;  /* already known (client-initiated) */
+  }
+  VALUE stream = quic_stream_new(stream_id, c->owner);
+  rb_hash_aset(streams, LL2NUM(stream_id), stream);
+  return 0;
+}
+
+static int
+quic_recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id,
+                         uint64_t offset, const uint8_t *data, size_t datalen,
+                         void *user_data, void *stream_user_data)
+{
+  (void)conn;
+  (void)offset;
+  (void)stream_user_data;
+  quic_client_t *c = (quic_client_t *)user_data;
+  VALUE stream = quic_client_lookup_stream(c, stream_id);
+  if (NIL_P(stream)) return 0;
+
+  quic_stream_t *s;
+  TypedData_Get_Struct(stream, quic_stream_t, &quic_stream_data_type, s);
+
+  if (datalen > 0) {
+    VALUE recv_buffer = rb_ivar_get(stream, rb_intern("@recv_buffer"));
+    rb_str_buf_cat(recv_buffer, (const char *)data, (long)datalen);
+  }
+  if (flags & NGTCP2_STREAM_DATA_FLAG_FIN) {
+    s->fin_received = true;
+  }
+  return 0;
+}
+
+static int
+quic_acked_stream_data_offset_cb(ngtcp2_conn *conn, int64_t stream_id,
+                                 uint64_t offset, uint64_t datalen,
+                                 void *user_data, void *stream_user_data)
+{
+  (void)conn;
+  (void)offset;
+  (void)stream_user_data;
+  quic_client_t *c = (quic_client_t *)user_data;
+  VALUE stream = quic_client_lookup_stream(c, stream_id);
+  if (NIL_P(stream)) return 0;
+
+  quic_stream_t *s;
+  TypedData_Get_Struct(stream, quic_stream_t, &quic_stream_data_type, s);
+  s->acked_offset += datalen;
+
+  /* Shift any head Chunks of @pending_chunks whose end-offset is fully
+     covered by acked_offset. Each Chunk's start-offset in the stream is
+     pending_shifted (after previous shifts); its end-offset is
+     pending_shifted + RSTRING_LEN(head). */
+  VALUE pending = rb_ivar_get(stream, rb_intern("@pending_chunks"));
+  while (RARRAY_LEN(pending) > 0) {
+    VALUE head = RARRAY_AREF(pending, 0);
+    uint64_t head_end = s->pending_shifted + (uint64_t)RSTRING_LEN(head);
+    if (head_end <= s->acked_offset) {
+      rb_ary_shift(pending);
+      s->pending_shifted = head_end;
+    } else {
+      break;
+    }
+  }
+  return 0;
+}
+
+static int
+quic_stream_close_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id,
+                     uint64_t app_error_code, void *user_data,
+                     void *stream_user_data)
+{
+  (void)conn;
+  (void)stream_user_data;
+  quic_client_t *c = (quic_client_t *)user_data;
+  VALUE streams = rb_ivar_get(c->owner, rb_intern("@streams"));
+  VALUE stream = rb_hash_aref(streams, LL2NUM(stream_id));
+  if (NIL_P(stream)) return 0;
+
+  quic_stream_t *s;
+  TypedData_Get_Struct(stream, quic_stream_t, &quic_stream_data_type, s);
+  s->closed = true;
+  if (flags & NGTCP2_STREAM_CLOSE_FLAG_APP_ERROR_CODE_SET) {
+    s->close_has_app_error_code = true;
+    s->close_app_error_code = app_error_code;
+  }
+  rb_hash_delete(streams, LL2NUM(stream_id));
+  return 0;
+}
+
+static int
+quic_stream_reset_cb(ngtcp2_conn *conn, int64_t stream_id, uint64_t final_size,
+                     uint64_t app_error_code, void *user_data,
+                     void *stream_user_data)
+{
+  (void)conn;
+  (void)final_size;
+  (void)stream_user_data;
+  quic_client_t *c = (quic_client_t *)user_data;
+  VALUE stream = quic_client_lookup_stream(c, stream_id);
+  if (NIL_P(stream)) return 0;
+
+  quic_stream_t *s;
+  TypedData_Get_Struct(stream, quic_stream_t, &quic_stream_data_type, s);
+  s->reset = true;
+  s->close_app_error_code = app_error_code;
+  s->close_has_app_error_code = true;
+  return 0;
+}
+
 static VALUE
 quic_client_open(int argc, VALUE *argv, VALUE klass)
 {
@@ -199,6 +346,7 @@ quic_client_open(int argc, VALUE *argv, VALUE klass)
 
   quic_client_t *c;
   TypedData_Get_Struct(self, quic_client_t, &quic_client_data_type, c);
+  c->owner = self;
 
   c->ssl_ctx = SSL_CTX_new(TLS_client_method());
   if (!c->ssl_ctx) {
@@ -277,6 +425,11 @@ quic_client_open(int argc, VALUE *argv, VALUE klass)
   callbacks.version_negotiation = ngtcp2_crypto_version_negotiation_cb;
   callbacks.rand = quic_rand_cb;
   callbacks.get_new_connection_id = quic_get_new_connection_id_cb;
+  callbacks.stream_open = quic_stream_open_cb;
+  callbacks.recv_stream_data = quic_recv_stream_data_cb;
+  callbacks.acked_stream_data_offset = quic_acked_stream_data_offset_cb;
+  callbacks.stream_close = quic_stream_close_cb;
+  callbacks.stream_reset = quic_stream_reset_cb;
 
   ngtcp2_settings settings;
   quic_fill_settings(&settings, settings_v);
@@ -299,7 +452,78 @@ quic_client_open(int argc, VALUE *argv, VALUE klass)
 
   ngtcp2_conn_set_tls_native_handle(c->conn, c->ssl);
 
+  /* Stream registry: stream_id (Integer) -> Quic::Stream.
+     Populated by #open_bidi_stream / #open_uni_stream and the stream_open
+     callback. Entries are removed in the stream_close callback. */
+  rb_ivar_set(self, rb_intern("@streams"), rb_hash_new());
+
   return self;
+}
+
+/* Find the first stream in @streams that has either pending bytes or a
+   pending FIN to flush. Phase 4 minimum: linear scan, take the first match
+   (no round-robin). Sets *out_datav to the byte slice to send, *out_datavcnt
+   to 0 or 1, *out_flags to NGTCP2_WRITE_STREAM_FLAG_FIN when applicable.
+   Returns the stream's Ruby VALUE (or Qnil if no candidate). */
+static VALUE
+quic_client_pick_send_stream(VALUE self, ngtcp2_vec *out_datav,
+                             size_t *out_datavcnt, uint32_t *out_flags,
+                             int64_t *out_stream_id)
+{
+  VALUE streams = rb_ivar_get(self, rb_intern("@streams"));
+  VALUE stream_values = rb_funcall(streams, rb_intern("values"), 0);
+
+  for (long i = 0; i < RARRAY_LEN(stream_values); i++) {
+    VALUE st = RARRAY_AREF(stream_values, i);
+    quic_stream_t *s;
+    TypedData_Get_Struct(st, quic_stream_t, &quic_stream_data_type, s);
+    if (s->fin_flushed) continue;
+
+    VALUE pending = rb_ivar_get(st, rb_intern("@pending_chunks"));
+    uint64_t position = s->sent_offset - s->pending_shifted;
+    long chunks_count = RARRAY_LEN(pending);
+
+    /* Walk pending Chunks to find the one containing the next unsent byte. */
+    long chunk_idx = -1;
+    long offset_in_chunk = 0;
+    for (long j = 0; j < chunks_count; j++) {
+      VALUE chunk = RARRAY_AREF(pending, j);
+      long clen = RSTRING_LEN(chunk);
+      if (position < (uint64_t)clen) {
+        chunk_idx = j;
+        offset_in_chunk = (long)position;
+        break;
+      }
+      position -= (uint64_t)clen;
+    }
+
+    if (chunk_idx >= 0) {
+      VALUE chunk = RARRAY_AREF(pending, chunk_idx);
+      out_datav->base = (uint8_t *)RSTRING_PTR(chunk) + offset_in_chunk;
+      out_datav->len = (size_t)(RSTRING_LEN(chunk) - offset_in_chunk);
+      *out_datavcnt = 1;
+      *out_stream_id = s->stream_id;
+      /* Attach FIN if this is the LAST chunk and we're going to send all
+         remaining bytes of it (ngtcp2 may encode less, in which case FIN
+         won't actually be flushed and we'll retry next call). */
+      *out_flags = (s->fin_sent && chunk_idx == chunks_count - 1)
+                     ? NGTCP2_WRITE_STREAM_FLAG_FIN
+                     : 0;
+      return st;
+    }
+
+    if (s->fin_sent && !s->fin_flushed) {
+      /* No data to send but a pending FIN-only frame. */
+      out_datav->base = NULL;
+      out_datav->len = 0;
+      *out_datavcnt = 0;
+      *out_stream_id = s->stream_id;
+      *out_flags = NGTCP2_WRITE_STREAM_FLAG_FIN;
+      return st;
+    }
+  }
+
+  return Qnil;
 }
 
 static VALUE
@@ -334,14 +558,53 @@ quic_client_write_pkt(int argc, VALUE *argv, VALUE self)
   uint8_t *dest = (uint8_t *)RSTRING_PTR(buffer);
   size_t destlen = (size_t)QUIC_WRITE_PKT_BUFLEN;
 
-  ngtcp2_ssize n = ngtcp2_conn_write_pkt(c->conn, &path_storage.path, &pi,
-                                         dest, destlen, quic_now());
+  /* Stream-aware path: if any stream has pending bytes or a pending FIN,
+     route the packet through ngtcp2_conn_writev_stream so the stream data
+     gets framed alongside connection-level frames. Falls back to conn-only
+     when no stream is queued. */
+  ngtcp2_vec datav;
+  size_t datavcnt = 0;
+  uint32_t writev_flags = 0;
+  int64_t send_stream_id = -1;
+  VALUE selected_stream = quic_client_pick_send_stream(
+    self, &datav, &datavcnt, &writev_flags, &send_stream_id);
+
+  ngtcp2_ssize pdatalen = -1;
+  ngtcp2_ssize n = ngtcp2_conn_writev_stream(
+    c->conn, &path_storage.path, &pi, dest, destlen, &pdatalen,
+    writev_flags, send_stream_id, &datav, datavcnt, quic_now());
+
   if (n < 0) {
     /* ngtcp2 does not partially write on failure, but truncate explicitly so
        that a rescued caller cannot accidentally transmit stale bytes. */
     rb_str_set_len(buffer, 0);
     quic_raise_ngtcp2_error((int)n);
   }
+
+  /* Update the selected stream's accounting only when we actually sent
+     bytes. pdatalen >= 0 means ngtcp2 framed that many data bytes into the
+     packet; if 0, no data was framed (but the packet may still contain ACK
+     or other frames). */
+  if (!NIL_P(selected_stream) && pdatalen > 0) {
+    quic_stream_t *s;
+    TypedData_Get_Struct(selected_stream, quic_stream_t,
+                         &quic_stream_data_type, s);
+    s->sent_offset += (uint64_t)pdatalen;
+    /* FIN is only actually written when all requested data fits in the
+       frame (see ngtcp2 docs on NGTCP2_WRITE_STREAM_FLAG_FIN). */
+    if ((writev_flags & NGTCP2_WRITE_STREAM_FLAG_FIN) &&
+        (size_t)pdatalen == datav.len) {
+      s->fin_flushed = true;
+    }
+  } else if (!NIL_P(selected_stream) && datavcnt == 0 && n > 0 &&
+             (writev_flags & NGTCP2_WRITE_STREAM_FLAG_FIN)) {
+    /* FIN-only packet (no data) was successfully written. */
+    quic_stream_t *s;
+    TypedData_Get_Struct(selected_stream, quic_stream_t,
+                         &quic_stream_data_type, s);
+    s->fin_flushed = true;
+  }
+
   if (n == 0) {
     rb_str_set_len(buffer, 0);
     return Qnil;
@@ -465,6 +728,38 @@ quic_client_handle_expiry(VALUE self)
   return Qnil;
 }
 
+static VALUE
+quic_client_open_bidi_stream(VALUE self)
+{
+  quic_client_t *c;
+  TypedData_Get_Struct(self, quic_client_t, &quic_client_data_type, c);
+
+  int64_t stream_id;
+  int rv = ngtcp2_conn_open_bidi_stream(c->conn, &stream_id, NULL);
+  if (rv != 0) quic_raise_ngtcp2_error(rv);
+
+  VALUE stream = quic_stream_new(stream_id, self);
+  VALUE streams = rb_ivar_get(self, rb_intern("@streams"));
+  rb_hash_aset(streams, LL2NUM(stream_id), stream);
+  return stream;
+}
+
+static VALUE
+quic_client_open_uni_stream(VALUE self)
+{
+  quic_client_t *c;
+  TypedData_Get_Struct(self, quic_client_t, &quic_client_data_type, c);
+
+  int64_t stream_id;
+  int rv = ngtcp2_conn_open_uni_stream(c->conn, &stream_id, NULL);
+  if (rv != 0) quic_raise_ngtcp2_error(rv);
+
+  VALUE stream = quic_stream_new(stream_id, self);
+  VALUE streams = rb_ivar_get(self, rb_intern("@streams"));
+  rb_hash_aset(streams, LL2NUM(stream_id), stream);
+  return stream;
+}
+
 void
 Init_quic_connection_client(VALUE rb_mQuicConnectionArg)
 {
@@ -478,4 +773,6 @@ Init_quic_connection_client(VALUE rb_mQuicConnectionArg)
   rb_define_method(rb_cQuicConnectionClient, "handshake_completed?", quic_client_handshake_completed_p, 0);
   rb_define_method(rb_cQuicConnectionClient, "in_closing_period?", quic_client_in_closing_period_p, 0);
   rb_define_method(rb_cQuicConnectionClient, "in_draining_period?", quic_client_in_draining_period_p, 0);
+  rb_define_method(rb_cQuicConnectionClient, "open_bidi_stream", quic_client_open_bidi_stream, 0);
+  rb_define_method(rb_cQuicConnectionClient, "open_uni_stream", quic_client_open_uni_stream, 0);
 }
