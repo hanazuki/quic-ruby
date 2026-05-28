@@ -11,7 +11,7 @@ This project is in early development; the public API is not yet stable.
 Not yet released to RubyGems.org. To use from a Gemfile while it is in development:
 
 ```ruby
-gem "quic", github: "unasuke/quic"
+gem "quic", github: "unasuke/quic-ruby"
 ```
 
 The native extension downloads and builds LibreSSL and ngtcp2 release tarballs during `bundle install`, so the host needs `autoconf`, `automake`, `libtool`, `pkg-config`, and a C toolchain available.
@@ -24,7 +24,7 @@ To install this gem onto your local machine, run `bundle exec rake install`.
 
 ## Contributing
 
-Bug reports and pull requests are welcome on GitHub at https://github.com/unasuke/quic. This project is intended to be a safe, welcoming space for collaboration, and contributors are expected to adhere to the [code of conduct](https://github.com/unasuke/quic/blob/main/CODE_OF_CONDUCT.md).
+Bug reports and pull requests are welcome on GitHub at https://github.com/unasuke/quic-ruby. This project is intended to be a safe, welcoming space for collaboration, and contributors are expected to adhere to the [code of conduct](https://github.com/unasuke/quic-ruby/blob/main/CODE_OF_CONDUCT.md).
 
 ## License
 
@@ -32,4 +32,4 @@ The gem is available as open source under the terms of the [MIT License](https:/
 
 ## Code of Conduct
 
-Everyone interacting in the Quic project's codebases, issue trackers, chat rooms and mailing lists is expected to follow the [code of conduct](https://github.com/unasuke/quic/blob/main/CODE_OF_CONDUCT.md).
+Everyone interacting in the Quic project's codebases, issue trackers, chat rooms and mailing lists is expected to follow the [code of conduct](https://github.com/unasuke/quic-ruby/blob/main/CODE_OF_CONDUCT.md).
