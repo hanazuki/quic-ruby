@@ -29,6 +29,23 @@ module Quic
 
     class Unknown < Error
     end
+
+    class WaitReadable < Error
+      include IO::WaitReadable
+    end
+
+    class WaitWritable < Error
+      include IO::WaitWritable
+    end
+
+    class StreamClosed < Error
+    end
+
+    class StreamReset < Error
+    end
+
+    class NotBound < Error
+    end
   end
 
   class TransportParams < Data
@@ -79,12 +96,29 @@ module Quic
       def handshake_completed?: () -> bool
       def in_closing_period?: () -> bool
       def in_draining_period?: () -> bool
+
+      def bind: (untyped sock) -> Client
+      def bound_socket: () -> untyped
+      def run: () -> void
+      def pump_once: (?timeout: Float?) -> void
+      def pump_until: () { () -> boolish } -> void
     end
   end
 
   class Stream
+    INITIATORS: Array[Symbol]
+
+    attr_reader id: Integer
+    alias stream_id id
+
     def initiator: () -> Symbol
-    def read: () -> String?
-    def write: (String data) -> Integer
+    def read: (?Integer? length) -> String?
+    def read_nonblock: (Integer length) -> String
+    def write: (String data, ?fin: bool) -> Integer
+    def write_nonblock: (String data, ?fin: bool) -> Integer
+    def eof?: () -> bool
+    def close_write: () -> nil
+    def close_read: () -> nil
+    def close: () -> nil
   end
 end

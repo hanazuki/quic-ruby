@@ -18,14 +18,19 @@ class TestQuic < Minitest::Test
     assert_instance_of Quic::Connection::Client, client
   end
 
-  def test_open_bidi_stream_is_not_implemented
+  def test_open_bidi_stream_raises_before_handshake
+    # Without a completed handshake the server's transport parameters have
+    # not arrived, so ngtcp2 reports NGTCP2_ERR_STREAM_ID_BLOCKED. This is
+    # mapped to Quic::Error::Unknown via the default switch arm.
     client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
-    assert_raises(NotImplementedError) { client.open_bidi_stream }
+    err = assert_raises(Quic::Error) { client.open_bidi_stream }
+    assert_match(/STREAM_ID_BLOCKED/, err.message)
   end
 
-  def test_open_uni_stream_is_not_implemented
+  def test_open_uni_stream_raises_before_handshake
     client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
-    assert_raises(NotImplementedError) { client.open_uni_stream }
+    err = assert_raises(Quic::Error) { client.open_uni_stream }
+    assert_match(/STREAM_ID_BLOCKED/, err.message)
   end
 
   def test_transport_params_default_returns_data_instance
@@ -152,5 +157,74 @@ class TestQuic < Minitest::Test
     settings = Quic::Settings.default.with(alpn: ["h3"])
     client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443, settings: settings)
     assert_instance_of Quic::Connection::Client, client
+  end
+
+  # Build a bare Quic::Stream for tests that exercise the in-Ruby state
+  # machine (initiator lookup, recv_buffer mutation, pending_chunks queue)
+  # without needing a completed handshake. The C-side quic_stream_t is
+  # zero-initialized by the alloc func; we only have to wire the Ruby ivars.
+  def build_stream(id:, client: nil)
+    Quic::Stream.allocate.tap do |s|
+      s.instance_variable_set(:@id, id)
+      s.instance_variable_set(:@client, client)
+      s.instance_variable_set(:@pending_chunks, [])
+      s.instance_variable_set(:@recv_buffer, String.new(encoding: Encoding::BINARY))
+    end
+  end
+
+  def test_stream_id_alias
+    s = build_stream(id: 4)
+    assert_equal 4, s.id
+    assert_equal 4, s.stream_id
+  end
+
+  def test_stream_initiator_table
+    assert_equal :client_bidi, build_stream(id: 0).initiator
+    assert_equal :server_bidi, build_stream(id: 1).initiator
+    assert_equal :client_uni, build_stream(id: 2).initiator
+    assert_equal :server_uni, build_stream(id: 3).initiator
+    # Same pattern repeats for higher IDs.
+    assert_equal :client_bidi, build_stream(id: 4).initiator
+  end
+
+  def test_stream_eof_is_false_initially
+    refute_predicate build_stream(id: 0), :eof?
+  end
+
+  def test_stream_read_nonblock_raises_wait_readable_when_empty
+    err = assert_raises(Quic::Error::WaitReadable) { build_stream(id: 0).read_nonblock(1024) }
+    assert_kind_of IO::WaitReadable, err
+  end
+
+  def test_stream_write_returns_bytesize_and_queues_chunk
+    s = build_stream(id: 0)
+    assert_equal 5, s.write("hello")
+    chunks = s.instance_variable_get(:@pending_chunks)
+    assert_equal 1, chunks.length
+    assert_equal "hello", chunks.first
+    assert_equal Encoding::BINARY, chunks.first.encoding
+  end
+
+  def test_stream_write_with_fin_sets_state
+    s = build_stream(id: 0)
+    s.write("bye", fin: true)
+    # Once FIN is queued, further writes raise StreamClosed.
+    assert_raises(Quic::Error::StreamClosed) { s.write("more") }
+  end
+
+  def test_client_run_raises_not_bound_without_bind
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    assert_raises(Quic::Error::NotBound) { client.run }
+  end
+
+  def test_client_bind_returns_self_and_records_socket
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    sock = UDPSocket.new
+    begin
+      assert_same client, client.bind(sock)
+      assert_same sock, client.bound_socket
+    ensure
+      sock.close
+    end
   end
 end
