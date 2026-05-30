@@ -760,6 +760,90 @@ quic_client_open_uni_stream(VALUE self)
   return stream;
 }
 
+/* Send an application CONNECTION_CLOSE (frame type 0x1d) to the peer and
+   transition the underlying ngtcp2_conn to the closing period. One UDP
+   datagram is written to the bound socket; ngtcp2 handles closing-period
+   retransmits via the caller's pump loop. Calling #close on a connection
+   that is already in the closing or draining period is a no-op (= returns
+   nil without doing any I/O). */
+static VALUE
+quic_client_close_m(int argc, VALUE *argv, VALUE self)
+{
+  VALUE opts = Qnil;
+  rb_scan_args(argc, argv, "0:", &opts);
+
+  uint64_t error_code = 0;
+  const uint8_t *reason_ptr = (const uint8_t *)"";
+  size_t reason_len = 0;
+
+  if (!NIL_P(opts)) {
+    VALUE error_code_v = rb_hash_aref(opts, ID2SYM(rb_intern("error_code")));
+    VALUE reason_v = rb_hash_aref(opts, ID2SYM(rb_intern("reason")));
+    if (!NIL_P(error_code_v)) {
+      error_code = NUM2ULL(error_code_v);
+    }
+    if (!NIL_P(reason_v)) {
+      Check_Type(reason_v, T_STRING);
+      reason_ptr = (const uint8_t *)RSTRING_PTR(reason_v);
+      reason_len = (size_t)RSTRING_LEN(reason_v);
+    }
+  }
+
+  quic_client_t *c;
+  TypedData_Get_Struct(self, quic_client_t, &quic_client_data_type, c);
+
+  /* Idempotent: a subsequent #close after the conn already entered the
+     closing/draining period does not emit another CONNECTION_CLOSE. */
+  if (ngtcp2_conn_in_closing_period(c->conn) ||
+      ngtcp2_conn_in_draining_period(c->conn)) {
+    return Qnil;
+  }
+
+  VALUE sock = rb_ivar_get(self, rb_intern("@sock"));
+  if (NIL_P(sock)) {
+    rb_raise(rb_eQuicErrorNotBound,
+             "Quic::Connection::Client#bind(sock) has not been called");
+  }
+
+  ngtcp2_ccerr ccerr;
+  ngtcp2_ccerr_set_application_error(&ccerr, error_code,
+                                     reason_len > 0 ? reason_ptr : NULL,
+                                     reason_len);
+
+  ngtcp2_path_storage path_storage;
+  ngtcp2_path_storage_zero(&path_storage);
+  ngtcp2_pkt_info pi;
+  memset(&pi, 0, sizeof(pi));
+
+  VALUE buffer = rb_str_buf_new(QUIC_WRITE_PKT_BUFLEN);
+  uint8_t *dest = (uint8_t *)RSTRING_PTR(buffer);
+
+  ngtcp2_ssize n = ngtcp2_conn_write_connection_close(
+      c->conn, &path_storage.path, &pi, dest,
+      (size_t)QUIC_WRITE_PKT_BUFLEN, &ccerr, quic_now());
+
+  /* Pre-handshake or otherwise not in a state where CONNECTION_CLOSE can be
+     emitted (ngtcp2 returns NGTCP2_ERR_INVALID_STATE). Spec treats this as
+     best-effort: silently no-op rather than surface an error. The Ruby
+     Client is effectively dead from here. */
+  if (n == NGTCP2_ERR_INVALID_STATE) {
+    return Qnil;
+  }
+
+  if (n < 0) {
+    rb_str_set_len(buffer, 0);
+    quic_raise_ngtcp2_error((int)n);
+  }
+
+  if (n == 0) {
+    return Qnil;
+  }
+
+  rb_str_set_len(buffer, n);
+  rb_funcall(sock, rb_intern("send"), 2, buffer, INT2NUM(0));
+  return Qnil;
+}
+
 void
 Init_quic_connection_client(VALUE rb_mQuicConnectionArg)
 {
@@ -775,4 +859,5 @@ Init_quic_connection_client(VALUE rb_mQuicConnectionArg)
   rb_define_method(rb_cQuicConnectionClient, "in_draining_period?", quic_client_in_draining_period_p, 0);
   rb_define_method(rb_cQuicConnectionClient, "open_bidi_stream", quic_client_open_bidi_stream, 0);
   rb_define_method(rb_cQuicConnectionClient, "open_uni_stream", quic_client_open_uni_stream, 0);
+  rb_define_method(rb_cQuicConnectionClient, "close", quic_client_close_m, -1);
 }

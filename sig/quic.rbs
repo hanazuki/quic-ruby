@@ -102,6 +102,14 @@ module Quic
       def run: () -> void
       def pump_once: (?timeout: Float?) -> void
       def pump_until: () { () -> boolish } -> void
+
+      # Sends an application CONNECTION_CLOSE (frame type 0x1d) to the peer
+      # carrying error_code and reason, then transitions the underlying
+      # ngtcp2_conn to the closing period. Requires Client#bind to have been
+      # called; raises Quic::Error::NotBound otherwise. A second #close call
+      # after the connection has already entered the closing or draining
+      # period is a no-op.
+      def close: (?error_code: Integer, ?reason: String) -> nil
     end
   end
 

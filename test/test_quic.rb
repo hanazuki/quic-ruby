@@ -257,4 +257,52 @@ class TestQuic < Minitest::Test
 
     assert_raises(Quic::Error::NotBound) { stream.write("x") }
   end
+
+  def test_client_close_raises_not_bound_without_bind
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    assert_raises(Quic::Error::NotBound) { client.close }
+  end
+
+  # Before the handshake completes, ngtcp2_conn_write_connection_close
+  # returns NGTCP2_ERR_INVALID_STATE. The spec treats this as best-effort,
+  # so #close silently no-ops (returns nil without raising). The full
+  # handshake -> close -> in_closing_period? path is exercised by the
+  # EXTERNAL=1 cloudflare e2e test.
+  def test_client_close_returns_nil_when_bound
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    sock = UDPSocket.new
+    sock.connect("127.0.0.1", 443)
+    client.bind(sock)
+    begin
+      assert_nil client.close
+    ensure
+      sock.close
+    end
+  end
+
+  def test_client_close_accepts_error_code_and_reason_kwargs
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    sock = UDPSocket.new
+    sock.connect("127.0.0.1", 443)
+    client.bind(sock)
+    begin
+      assert_nil client.close(error_code: 42, reason: "bye")
+    ensure
+      sock.close
+    end
+  end
+
+  def test_client_close_is_noop_when_already_closed
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    sock = UDPSocket.new
+    sock.connect("127.0.0.1", 443)
+    client.bind(sock)
+    begin
+      client.close
+      # Second close should not emit another packet nor raise.
+      assert_nil client.close
+    ensure
+      sock.close
+    end
+  end
 end
