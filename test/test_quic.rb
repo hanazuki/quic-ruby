@@ -334,4 +334,22 @@ class TestQuic < Minitest::Test
       Quic::Connection::Client.new(host: "127.0.0.1", port: 443, address_family: :bogus)
     end
   end
+
+  # The Client TypedData holds a VALUE back-reference (owner) that ngtcp2
+  # callbacks resolve through. quic_client_compact follows it via
+  # rb_gc_location so GC.compact does not leave it stale. Build a live
+  # Client with a couple of bare streams registered, force compaction with
+  # reference verification, then confirm the object is still coherent.
+  def test_client_survives_gc_compaction
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    streams = client.instance_variable_get(:@streams)
+    streams[0] = build_stream(id: 0, client: client)
+    streams[1] = build_stream(id: 1, client: client)
+
+    GC.verify_compaction_references(expand_heap: true, toward: :empty)
+
+    assert_equal false, client.handshake_completed?
+    assert_kind_of Integer, client.expiry
+    assert_same client, streams[0].instance_variable_get(:@client)
+  end
 end

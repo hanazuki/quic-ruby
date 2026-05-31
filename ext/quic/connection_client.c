@@ -28,8 +28,8 @@ typedef struct {
      this struct. ngtcp2 stream callbacks receive a void* user_data equal
      to this struct, and they look up @streams via owner. We are stored
      INSIDE owner via TypedData_Wrap_Struct, so owner is guaranteed alive
-     while we exist (no dmark needed). GC.compact may relocate owner and
-     leave this field stale; a dcompact slot is a Phase 5 follow-up. */
+     while we exist (no dmark needed). GC.compact may relocate owner, so
+     quic_client_compact updates this field via rb_gc_location. */
   VALUE owner;
 } quic_client_t;
 
@@ -50,9 +50,20 @@ quic_client_size(const void *ptr)
   return sizeof(quic_client_t);
 }
 
+/* GC.compact may relocate the owner Client object. Follow it so the
+   void* user_data ngtcp2 callbacks receive (which equals this struct,
+   stored inside owner) keeps resolving @streams / @accept_queue. The
+   raw ngtcp2/SSL pointers are outside Ruby's heap and are left alone. */
+static void
+quic_client_compact(void *ptr)
+{
+  quic_client_t *c = (quic_client_t *)ptr;
+  c->owner = rb_gc_location(c->owner);
+}
+
 static const rb_data_type_t quic_client_data_type = {
   "Quic::Connection::Client",
-  {NULL, quic_client_free, quic_client_size,},
+  {NULL, quic_client_free, quic_client_size, quic_client_compact,},
   NULL, NULL,
   RUBY_TYPED_FREE_IMMEDIATELY,
 };
