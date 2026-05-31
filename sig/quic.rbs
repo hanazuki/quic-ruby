@@ -142,5 +142,10 @@ module Quic
     def close_write: () -> nil
     def close_read: () -> nil
     def close: () -> nil
+
+    # Aborts the send side with RESET_STREAM carrying error_code (default 0).
+    # After #reset, #write / #write_nonblock raise Quic::Error::StreamClosed.
+    # The read side is unaffected. Idempotent: a second #reset is a no-op.
+    def reset: (?Integer error_code) -> nil
   end
 end

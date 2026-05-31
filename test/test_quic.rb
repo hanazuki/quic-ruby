@@ -352,4 +352,27 @@ class TestQuic < Minitest::Test
     assert_kind_of Integer, client.expiry
     assert_same client, streams[0].instance_variable_get(:@client)
   end
+
+  # A bare Stream (@client == nil) escapes the ngtcp2 call and only flips
+  # the internal reset flag, mirroring #write's bare-Stream escape. After
+  # #reset, the existing quic_stream_enqueue guard makes #write raise
+  # Quic::Error::StreamClosed.
+  def test_stream_reset_marks_write_side_closed
+    s = build_stream(id: 0)
+    assert_nil s.reset
+    assert_raises(Quic::Error::StreamClosed) { s.write("data") }
+  end
+
+  def test_stream_reset_accepts_error_code
+    s = build_stream(id: 0)
+    assert_nil s.reset(42)
+    assert_raises(Quic::Error::StreamClosed) { s.write_nonblock("data") }
+  end
+
+  def test_stream_reset_is_idempotent
+    s = build_stream(id: 0)
+    s.reset
+    # Second reset must not raise.
+    assert_nil s.reset
+  end
 end

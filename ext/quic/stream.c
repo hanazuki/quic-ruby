@@ -268,6 +268,41 @@ quic_stream_close_m(VALUE self)
   return Qnil;
 }
 
+/* Abort the send side of the stream with RESET_STREAM
+   (ngtcp2_conn_shutdown_stream_write), carrying the given application error
+   code (default 0). After #reset, #write / #write_nonblock raise
+   Quic::Error::StreamClosed because quic_stream_enqueue rejects a stream
+   with s->reset set. The read side is untouched (use #close_read /
+   #close for STOP_SENDING). Idempotent: a second #reset is a no-op.
+
+   A bare Stream (@client == nil, used by unit-test fixtures) skips the
+   ngtcp2 call and only flips s->reset, mirroring the #write / #close_write
+   bare-Stream escapes. */
+static VALUE
+quic_stream_reset_m(int argc, VALUE *argv, VALUE self)
+{
+  VALUE error_code_v = Qnil;
+  rb_scan_args(argc, argv, "01", &error_code_v);
+  uint64_t error_code = NIL_P(error_code_v) ? 0 : NUM2ULL(error_code_v);
+
+  quic_stream_t *s;
+  TypedData_Get_Struct(self, quic_stream_t, &quic_stream_data_type, s);
+
+  if (s->reset) return Qnil;  /* idempotent */
+
+  VALUE client_v = rb_ivar_get(self, rb_intern("@client"));
+  if (NIL_P(client_v)) {
+    s->reset = true;  /* bare Stream escape */
+    return Qnil;
+  }
+
+  ngtcp2_conn *conn = quic_client_conn(client_v);
+  int rv = ngtcp2_conn_shutdown_stream_write(conn, 0, s->stream_id, error_code);
+  if (rv != 0) quic_raise_ngtcp2_error(rv);
+  s->reset = true;
+  return Qnil;
+}
+
 void
 Init_quic_stream(VALUE rb_mQuicArg)
 {
@@ -280,5 +315,6 @@ Init_quic_stream(VALUE rb_mQuicArg)
   rb_define_method(rb_cQuicStream, "eof?", quic_stream_eof_p, 0);
   rb_define_method(rb_cQuicStream, "close_read", quic_stream_close_read_m, 0);
   rb_define_method(rb_cQuicStream, "close", quic_stream_close_m, 0);
+  rb_define_method(rb_cQuicStream, "reset", quic_stream_reset_m, -1);
   /* #read (blocking) and #initiator are defined in lib/quic/stream.rb. */
 }
