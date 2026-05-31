@@ -232,6 +232,15 @@ quic_recv_stream_data_cb(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id,
   quic_stream_t *s;
   TypedData_Get_Struct(stream, quic_stream_t, &quic_stream_data_type, s);
 
+  /* Surface peer-initiated (server) streams to #accept_stream. For a client
+     connection the low stream-id bit marks the initiator: 1 == server. Push
+     once, on first data arrival, then mark so later data does not re-enqueue. */
+  if (!s->accept_queued && (stream_id & 0x01)) {
+    VALUE accept_queue = rb_ivar_get(c->owner, rb_intern("@accept_queue"));
+    rb_ary_push(accept_queue, stream);
+    s->accept_queued = true;
+  }
+
   if (datalen > 0) {
     VALUE recv_buffer = rb_ivar_get(stream, rb_intern("@recv_buffer"));
     rb_str_buf_cat(recv_buffer, (const char *)data, (long)datalen);
@@ -467,6 +476,10 @@ quic_client_open(int argc, VALUE *argv, VALUE klass)
      Populated by #open_bidi_stream / #open_uni_stream and the stream_open
      callback. Entries are removed in the stream_close callback. */
   rb_ivar_set(self, rb_intern("@streams"), rb_hash_new());
+
+  /* FIFO of peer-initiated (server) streams awaiting #accept_stream. The
+     recv_stream_data callback pushes each new server stream here once. */
+  rb_ivar_set(self, rb_intern("@accept_queue"), rb_ary_new());
 
   return self;
 }

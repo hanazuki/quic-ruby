@@ -375,4 +375,36 @@ class TestQuic < Minitest::Test
     # Second reset must not raise.
     assert_nil s.reset
   end
+
+  def test_accept_stream_nonblock_raises_wait_readable_when_empty
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    err = assert_raises(Quic::Error::WaitReadable) { client.accept_stream_nonblock }
+    assert_kind_of IO::WaitReadable, err
+  end
+
+  def test_accept_stream_nonblock_returns_queued_stream
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    queue = client.instance_variable_get(:@accept_queue)
+    server_stream = build_stream(id: 1, client: client)
+    queue.push(server_stream)
+
+    assert_same server_stream, client.accept_stream_nonblock
+    # Queue is now drained.
+    assert_raises(Quic::Error::WaitReadable) { client.accept_stream_nonblock }
+  end
+
+  def test_accept_stream_with_zero_timeout_returns_nil_when_empty
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    assert_nil client.accept_stream(timeout: 0)
+  end
+
+  def test_accept_stream_returns_queued_stream_without_pumping
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    queue = client.instance_variable_get(:@accept_queue)
+    server_stream = build_stream(id: 1, client: client)
+    queue.push(server_stream)
+
+    # Queue non-empty: returns immediately, no #bind / pump needed.
+    assert_same server_stream, client.accept_stream(timeout: nil)
+  end
 end

@@ -102,6 +102,43 @@ module Quic
         pump_once until pred.call
       end
 
+      # Pop the next peer-initiated (server) stream off the accept queue,
+      # driving the I/O loop until one arrives. The queue is fed by the
+      # recv_stream_data callback the first time a server stream carries data.
+      #
+      # timeout: nil      block until a stream is available (requires #bind)
+      # timeout: 0        return immediately; nil if the queue is empty
+      # timeout: Numeric  block up to that many seconds, then return nil
+      #
+      # Returns a Quic::Stream, or nil on timeout.
+      def accept_stream(timeout: nil)
+        stream = @accept_queue.shift
+        return stream unless stream.nil?
+        return nil if timeout == 0
+
+        deadline = timeout && Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+        loop do
+          if deadline
+            remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+            return nil if remaining <= 0.0
+            pump_once(timeout: remaining)
+          else
+            pump_once
+          end
+          stream = @accept_queue.shift
+          return stream unless stream.nil?
+        end
+      end
+
+      # Non-blocking variant of #accept_stream. Returns the next queued
+      # server stream, or raises Quic::Error::WaitReadable (IO::WaitReadable
+      # mixin) when the queue is empty. Does not require #bind.
+      def accept_stream_nonblock
+        stream = @accept_queue.shift
+        raise Quic::Error::WaitReadable, "no server-initiated stream available" if stream.nil?
+        stream
+      end
+
       private
 
       def pump_timeout(caller_timeout)

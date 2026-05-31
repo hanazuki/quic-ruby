@@ -29,6 +29,10 @@ typedef struct {
   bool closed;                /* stream_close callback fired */
   uint64_t close_app_error_code;
   bool close_has_app_error_code;
+  /* Set once a peer-initiated (server) stream has been pushed onto the
+     owner Client's @accept_queue, so recv_stream_data does not enqueue it
+     again on subsequent data arrivals. */
+  bool accept_queued;
 } quic_stream_t;
 
 extern const rb_data_type_t quic_stream_data_type;
