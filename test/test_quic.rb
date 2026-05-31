@@ -305,4 +305,33 @@ class TestQuic < Minitest::Test
       sock.close
     end
   end
+
+  def test_client_remote_address_is_addrinfo
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
+    assert_kind_of Addrinfo, client.remote_address
+    assert_equal "127.0.0.1", client.remote_address.ip_address
+    assert_equal 443, client.remote_address.ip_port
+  end
+
+  def test_client_address_family_inet_pins_ipv4
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443, address_family: :inet)
+    assert_equal Socket::AF_INET, client.remote_address.afamily
+  end
+
+  def test_client_address_family_inet6_pins_ipv6
+    client = Quic::Connection::Client.new(host: "::1", port: 443, address_family: :inet6)
+    assert_equal Socket::AF_INET6, client.remote_address.afamily
+  end
+
+  def test_client_address_family_nil_is_phase4_compatible
+    client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443, address_family: nil)
+    assert_instance_of Quic::Connection::Client, client
+    assert_equal Socket::AF_INET, client.remote_address.afamily
+  end
+
+  def test_client_address_family_unknown_raises_argument_error
+    assert_raises(ArgumentError) do
+      Quic::Connection::Client.new(host: "127.0.0.1", port: 443, address_family: :bogus)
+    end
+  end
 end

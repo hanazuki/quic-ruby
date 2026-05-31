@@ -5,8 +5,30 @@ require "socket"
 module Quic
   module Connection
     class Client
-      def self.new(host:, port:, transport_params: nil, settings: nil)
-        remote_sockaddr = Addrinfo.udp(host, port).to_sockaddr
+      attr_reader :remote_address
+
+      # Build a Client and pin a single peer address. address_family takes a
+      # Symbol (:inet for IPv4, :inet6 for IPv6) or nil to defer family
+      # selection to Addrinfo.udp's implicit resolution. Pin the resolved
+      # Addrinfo into @remote_address so callers can match their UDPSocket's
+      # connected sockaddr (otherwise DNS round-robin between Client.new and
+      # sock.connect can produce a path that ngtcp2 silently drops).
+      def self.new(host:, port:, address_family: nil, transport_params: nil, settings: nil)
+        family = case address_family
+        when nil then nil
+        when :inet then Socket::AF_INET
+        when :inet6 then Socket::AF_INET6
+        else
+          raise ArgumentError, "unknown address_family: #{address_family.inspect}"
+        end
+
+        remote_address = if family
+          Addrinfo.getaddrinfo(host, port, family, :DGRAM, Socket::IPPROTO_UDP).first
+        else
+          Addrinfo.udp(host, port)
+        end
+
+        remote_sockaddr = remote_address.to_sockaddr
         local_sockaddr = Addrinfo.udp("0.0.0.0", 0).to_sockaddr
 
         client = _open(
@@ -18,6 +40,7 @@ module Quic
         )
         client.instance_variable_set(:@host, host)
         client.instance_variable_set(:@port, port)
+        client.instance_variable_set(:@remote_address, remote_address)
         client
       end
 

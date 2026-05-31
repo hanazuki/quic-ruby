@@ -75,7 +75,9 @@ module Quic
 
   module Connection
     class Client
-      def self.new: (host: String, port: Integer, ?transport_params: TransportParams?, ?settings: Settings?) -> Client
+      attr_reader remote_address: Addrinfo
+
+      def self.new: (host: String, port: Integer, ?address_family: Symbol?, ?transport_params: TransportParams?, ?settings: Settings?) -> Client
 
       def self._open: (
         local_sockaddr: String,
