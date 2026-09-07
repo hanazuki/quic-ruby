@@ -34,3 +34,75 @@ jobs:
           key: ports-${{ runner.os }}-libressl-4.3.1-ngtcp2-1.22.1-${{ hashFiles('ext/quic/extconf.rb') }}
       - name: Run the default task
         run: bundle exec rake
+
+  cross-build:
+    runs-on: ubuntu-latest
+    name: Cross-build x86_64-linux-gnu gem
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@c4e5b1316158f92e3d49443a9d58b31d25ac0f8f # v1.306.0
+        with:
+          ruby-version: '4.0.1'
+          bundler-cache: true
+      # rake-compiler-dock mounts the working dir, so the build artifacts persist on
+      # the host and can be cached across runs. mini_portile2 resolves ports/ and
+      # tmp/ relative to the cwd, which during a cross build is
+      # tmp/x86_64-linux-gnu/quic/<ruby-ver>/, so LibreSSL and ngtcp2 are built once
+      # per Ruby ABI under tmp/ and the repository-level ports/ is never used.
+      - name: Cache vendored ports
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: tmp
+          key: cross-ports-${{ runner.os }}-libressl-4.3.1-ngtcp2-1.22.1-${{ hashFiles('ext/quic/extconf.rb') }}
+      - name: Build precompiled x86_64-linux-gnu gem
+        run: bundle exec rake gem:x86_64-linux-gnu
+      - name: Verify bundled .so for each Ruby ABI
+        run: |
+          set -euo pipefail
+          gem unpack pkg/quic-*-x86_64-linux-gnu.gem --target /tmp/unpacked
+          for abi in 3.4 4.0; do
+            so=$(echo /tmp/unpacked/quic-*/lib/quic/"${abi}"/quic.so)
+            if [ ! -f "${so}" ]; then
+              echo "missing precompiled .so for Ruby ${abi}" >&2
+              exit 1
+            fi
+            echo "found: ${so}"
+          done
+          # The precompiled gem redistributes LibreSSL and ngtcp2 binaries, so it
+          # must carry their license texts. This job is the only place the gem's
+          # contents can be inspected (it cannot be built locally).
+          for f in LICENSE.txt LICENSE-DEPENDENCIES.txt; do
+            path=$(echo /tmp/unpacked/quic-*/"${f}")
+            if [ ! -f "${path}" ]; then
+              echo "missing ${f} in the precompiled gem" >&2
+              exit 1
+            fi
+            echo "found: ${path}"
+          done
+
+      - name: Install precompiled gem and load it
+        run: |
+          set -euo pipefail
+          # Count the matches instead of relying on the glob, which would expand to
+          # the literal pattern when nothing matches.
+          mapfile -t gems < <(ls -1 pkg/quic-*-x86_64-linux-gnu.gem)
+          if [ "${#gems[@]}" -ne 1 ]; then
+            echo "expected exactly 1 precompiled gem in pkg/, found ${#gems[@]}" >&2
+            exit 1
+          fi
+          gem="${gems[0]}"
+          # Dependencies and extensions must both be empty. Capture the output
+          # instead of piping it: under pipefail, an early exit from grep -q can
+          # make the upstream command fail with SIGPIPE.
+          deps="$(gem specification "${gem}" dependencies)"
+          echo "dependencies: ${deps}"
+          [ "${deps}" = "--- []" ] || { echo "precompiled gem still has dependencies" >&2; exit 1; }
+          exts="$(gem specification "${gem}" extensions)"
+          echo "extensions: ${exts}"
+          [ "${exts}" = "--- []" ] || { echo "precompiled gem still declares extensions" >&2; exit 1; }
+          gem install --local "${gem}"
+          # Without bundle exec, so the shim has to pick lib/quic/<abi>/quic.so.
+          ruby -rquic -e 'p Quic::VERSION, Quic.library_versions; so = $LOADED_FEATURES.grep(%r{/quic/\d+\.\d+/quic\.so$}); abort "versioned .so not loaded" if so.empty?; puts so'
