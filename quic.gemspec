@@ -21,6 +21,9 @@ Gem::Specification.new do |spec|
   spec.metadata["homepage_uri"] = spec.homepage
   spec.metadata["source_code_uri"] = "https://github.com/unasuke/quic-ruby"
   spec.metadata["changelog_uri"] = "https://github.com/unasuke/quic-ruby/blob/main/CHANGELOG.md"
+  # Owner actions and API-key pushes require MFA. Trusted publishing (OIDC) is not
+  # an API key, so the release workflow is unaffected; a manual push is not.
+  spec.metadata["rubygems_mfa_required"] = "true"
 
   # Specify which files should be added to the gem when it is released.
   # The `git ls-files -z` loads the files in the RubyGem that have been added into git.
@@ -36,8 +39,10 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
   spec.extensions = ["ext/quic/extconf.rb"]
 
-  # Uncomment to register a new dependency of your gem
-  # spec.add_dependency "example-gem", "~> 1.0"
+  # ngtcp2 + LibreSSL are vendored and built from source via mini_portile2 when
+  # installing the platform-independent (source) gem. Precompiled platform gems
+  # ship a prebuilt .so and drop this dependency (see the Rakefile cross_compiling block).
+  spec.add_dependency "mini_portile2"
 
   # For more information and examples about making a new gem, check out our
   # guide at: https://bundler.io/guides/creating_gem.html
