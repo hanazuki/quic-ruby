@@ -8,13 +8,13 @@ This project is in early development; the public API is not yet stable.
 
 ## Installation
 
-Not yet released to RubyGems.org. To use from a Gemfile while it is in development:
-
 ```ruby
-gem "quic", github: "unasuke/quic-ruby"
+gem "quic"
 ```
 
-The native extension downloads and builds LibreSSL and ngtcp2 release tarballs during `bundle install`, so the host needs `autoconf`, `automake`, `libtool`, `pkg-config`, and a C toolchain available.
+On `x86_64-linux-gnu` with Ruby 3.4 or 4.0, a precompiled gem is installed. It bundles `quic.so` with LibreSSL and ngtcp2 statically linked, so no build tools are required.
+
+Everywhere else — musl-based distributions, other architectures, other Ruby versions — the source gem is installed instead. It downloads and builds the LibreSSL and ngtcp2 release tarballs during installation, so the host needs `autoconf`, `automake`, `libtool`, `pkg-config`, and a C toolchain.
 
 ## Development
 
@@ -29,6 +29,10 @@ Bug reports and pull requests are welcome on GitHub at https://github.com/unasuk
 ## License
 
 The gem is available as open source under the terms of the [MIT License](https://opensource.org/licenses/MIT).
+
+The precompiled `x86_64-linux-gnu` gem statically links [LibreSSL](https://www.libressl.org/) (OpenSSL/SSLeay and ISC licenses) and [ngtcp2](https://github.com/ngtcp2/ngtcp2) (MIT, with portions under the Chromium BSD-3-Clause license). Their license texts are in [LICENSE-DEPENDENCIES.txt](LICENSE-DEPENDENCIES.txt).
+
+This product includes software developed by the OpenSSL Project for use in the OpenSSL Toolkit (http://www.openssl.org/). This product includes cryptographic software written by Eric Young (eay@cryptsoft.com).
 
 ## Code of Conduct
 
