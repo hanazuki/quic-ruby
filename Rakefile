@@ -52,13 +52,22 @@ if defined?(RakeCompilerDock)
       #   Patch versions track the image, so they are never hardcoded. set -e only
       #   sees the exit status of the last pipeline element (paste), so an empty
       #   match has to be caught explicitly or we would ship a gem without any .so.
+      # - The target is `native:<platform> gem`, not rake-compiler's usual
+      #   `cross native gem`. rake-compiler-dock images set
+      #   RAKE_EXTENSION_TASK_NO_NATIVE=true, which stops rake-compiler from
+      #   defining the bare `native` task, yet its `cross` task still looks that
+      #   task up and aborts with "Don't know how to build task 'native'". Naming
+      #   the per-platform task sidesteps `cross`, which only exists to point the
+      #   default compile/native tasks at the cross platform anyway. `gem` has to
+      #   stay in the same rake invocation: it is defined at run time, by the
+      #   Gem::PackageTask that the native task creates.
       RakeCompilerDock.sh <<~'CMD', platform: "x86_64-linux-gnu"
         set -e
         BUNDLE_FROZEN=true bundle install
         cc=$(echo "$RUBY_CC_VERSION" | tr ':' '\n' | grep -E '^(3\.4|4\.0)\.' | paste -sd: -)
         [ -n "$cc" ] || { echo "no 3.4.x / 4.0.x cross rubies found in RUBY_CC_VERSION=$RUBY_CC_VERSION" >&2; exit 1; }
         echo "Building for RUBY_CC_VERSION=$cc"
-        RUBY_CC_VERSION="$cc" bundle exec rake cross native gem
+        RUBY_CC_VERSION="$cc" bundle exec rake native:x86_64-linux-gnu gem
       CMD
     end
   end
