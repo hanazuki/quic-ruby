@@ -46,7 +46,15 @@ jobs:
         uses: ruby/setup-ruby@c4e5b1316158f92e3d49443a9d58b31d25ac0f8f # v1.306.0
         with:
           ruby-version: '4.0.1'
-          bundler-cache: true
+      # Deliberately without bundler-cache, which installs into ./vendor/bundle and
+      # writes BUNDLE_PATH into .bundle/config. rake-compiler-dock mounts the working
+      # dir into a container with an older glibc, and a local .bundle/config outranks
+      # the BUNDLE_PATH environment variable, so the container's bundler would load
+      # the host-built native gems from vendor/bundle and die with "GLIBC_x.yz not
+      # found". Installing into the runner's own gem home keeps the mounted directory
+      # free of host binaries.
+      - name: Install host gems
+        run: BUNDLE_FROZEN=true bundle install
       # rake-compiler-dock mounts the working dir, so the build artifacts persist on
       # the host and can be cached across runs. mini_portile2 resolves ports/ and
       # tmp/ relative to the cwd, which during a cross build is
