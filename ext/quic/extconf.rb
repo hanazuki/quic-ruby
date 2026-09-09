@@ -50,5 +50,6 @@ abort "libngtcp2_crypto_libressl not linkable" unless have_func("ngtcp2_crypto_q
 abort "libssl not linkable" unless have_func("OpenSSL_version", "openssl/opensslv.h")
 
 append_cflags("-fvisibility=hidden")
+append_ldflags("-Wl,--exclude-libs,ALL")  # Unexport symbols from statically linked libraries
 
 create_makefile("quic/quic")
