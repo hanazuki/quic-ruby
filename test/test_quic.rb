@@ -13,6 +13,12 @@ class TestQuic < Minitest::Test
     assert_match(/LibreSSL/, versions[:openssl])
   end
 
+  # picotls has no version macro and no releases, so extconf.rb bakes in the
+  # commit it built against.
+  def test_library_versions_reports_picotls_commit
+    assert_match(/\A[0-9a-f]{40}\z/, Quic.library_versions[:picotls])
+  end
+
   def test_connection_client_initializes
     client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
     assert_instance_of Quic::Connection::Client, client
@@ -351,6 +357,27 @@ class TestQuic < Minitest::Test
     assert_equal false, client.handshake_completed?
     assert_kind_of Integer, client.expiry
     assert_same client, streams[0].instance_variable_get(:@client)
+  end
+
+  # picotls keeps pointers into the ALPN list for the whole handshake, so the
+  # client has to own that memory. Drop every Ruby-side reference to the ALPN
+  # strings and the Settings by building them inline, force compaction, then
+  # confirm an Initial packet is still produced.
+  def test_alpn_list_survives_gc_compaction
+    client = Quic::Connection::Client.new(
+      host: "127.0.0.1", port: 443,
+      settings: Quic::Settings.default.with(alpn: [+"h3", +"hq-interop"])
+    )
+
+    GC.start
+    GC.verify_compaction_references(expand_heap: true, toward: :empty)
+
+    pkt = client.write_pkt
+    refute_nil pkt
+    # Long header, fixed bit set, Initial packet type (0b1100_xxxx).
+    assert_equal 0xc0, pkt.getbyte(0) & 0xf0
+    # ngtcp2 pads the client's first Initial to at least 1200 bytes.
+    assert_operator pkt.bytesize, :>=, 1200
   end
 
   # A bare Stream (@client == nil) escapes the ngtcp2 call and only flips
