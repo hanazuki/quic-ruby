@@ -31,7 +31,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: tmp
-          key: ports-${{ runner.os }}-libressl-4.3.1-ngtcp2-1.22.1-${{ hashFiles('ext/quic/extconf.rb') }}
+          key: ports-${{ runner.os }}-libressl-4.3.1-ngtcp2-1.22.1-picotls-b84869f-${{ hashFiles('ext/quic/extconf.rb', 'ext/quic/patches/**') }}
       - name: Run the default task
         run: bundle exec rake
 
@@ -64,7 +64,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: tmp
-          key: cross-ports-${{ runner.os }}-libressl-4.3.1-ngtcp2-1.22.1-${{ hashFiles('ext/quic/extconf.rb') }}
+          key: cross-ports-${{ runner.os }}-libressl-4.3.1-ngtcp2-1.22.1-picotls-b84869f-${{ hashFiles('ext/quic/extconf.rb', 'ext/quic/patches/**') }}
       - name: Build precompiled x86_64-linux-gnu gem
         run: bundle exec rake gem:x86_64-linux-gnu
       - name: Verify bundled .so for each Ruby ABI
@@ -78,6 +78,20 @@ jobs:
               exit 1
             fi
             echo "found: ${so}"
+            # LibreSSL, picotls and ngtcp2 must all be statically linked, and
+            # neither libssl nor picotls may leak symbols out of quic.so.
+            # Phrased as `if grep -q ...; then exit 1; fi` because a no-match
+            # grep exits 1 and would fail the step under set -e.
+            if ldd "${so}" | grep -qE 'libssl|libcrypto'; then
+              echo "quic.so dynamically links libssl/libcrypto" >&2
+              ldd "${so}" >&2
+              exit 1
+            fi
+            if nm -D --defined-only "${so}" | grep -qE ' (SSL|ptls)_'; then
+              echo "quic.so exports SSL_* or ptls_* symbols" >&2
+              nm -D --defined-only "${so}" | grep -E ' (SSL|ptls)_' >&2
+              exit 1
+            fi
           done
           # The precompiled gem redistributes LibreSSL and ngtcp2 binaries, so it
           # must carry their license texts. This job is the only place the gem's
