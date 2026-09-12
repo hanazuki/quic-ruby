@@ -29,6 +29,10 @@ quic_library_versions(VALUE self)
                rb_str_new_cstr(ngtcp2_version(0)->version_str));
   rb_hash_aset(h, ID2SYM(rb_intern("openssl")),
                rb_str_new_cstr(OpenSSL_version(OPENSSL_VERSION)));
+  /* picotls has neither a version macro nor releases, so report the commit
+     extconf.rb built against (passed in as -DQUIC_PICOTLS_COMMIT). */
+  rb_hash_aset(h, ID2SYM(rb_intern("picotls")),
+               rb_str_new_cstr(QUIC_PICOTLS_COMMIT));
   return h;
 }
 

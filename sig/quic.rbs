@@ -1,7 +1,7 @@
 module Quic
   VERSION: String
 
-  def self.library_versions: () -> { ngtcp2: String, openssl: String }
+  def self.library_versions: () -> { ngtcp2: String, openssl: String, picotls: String }
 
   class Error < StandardError
     attr_reader code: Integer?

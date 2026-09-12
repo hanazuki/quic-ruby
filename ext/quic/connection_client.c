@@ -12,17 +12,48 @@
    minimum destlen ngtcp2 accepts. Revisit when PMTUD is enabled (Phase 4+). */
 #define QUIC_WRITE_PKT_BUFLEN NGTCP2_MAX_UDP_PAYLOAD_SIZE
 
-static int quic_crypto_initialized = 0;
+/* picotls sends a key share only for the first entry; the others are offered
+   in supported_groups and reached via HelloRetryRequest. X25519 is first so
+   the common case stays 1-RTT. */
+static ptls_key_exchange_algorithm_t *quic_key_exchanges[] = {
+  &ptls_openssl_x25519,
+  &ptls_openssl_secp256r1,
+#if PTLS_OPENSSL_HAVE_SECP384R1
+  &ptls_openssl_secp384r1,
+#endif
+  NULL,
+};
+
+static ptls_cipher_suite_t *quic_cipher_suites[] = {
+  &ptls_openssl_aes128gcmsha256,
+  &ptls_openssl_aes256gcmsha384,
+#if PTLS_OPENSSL_HAVE_CHACHA20_POLY1305
+  &ptls_openssl_chacha20poly1305sha256,
+#endif
+  NULL,
+};
 
 typedef struct {
   ngtcp2_conn *conn;
-  SSL_CTX *ssl_ctx;
-  SSL *ssl;
+  /* Referenced by cptls.ptls, which only keeps the pointer, so this has to
+     outlive the ptls_t. */
+  ptls_context_t tls_ctx;
+  /* The TLS native handle handed to ngtcp2 (&cptls, not cptls.ptls). */
+  ngtcp2_crypto_picotls_ctx cptls;
+  /* [0]: QUIC transport params, filled in by ngtcp2; [1]: terminator. */
+  ptls_raw_extension_t tls_exts[2];
+  /* ALPN list handed to picotls, which keeps the pointers for the whole
+     handshake (unlike SSL_set_alpn_protos, which copies). The entries point
+     into alpn_buf, and both are owned by this struct. */
+  ptls_iovec_t *alpn;
+  size_t alpn_count;
+  uint8_t *alpn_buf;
   ngtcp2_cid scid;
   ngtcp2_cid dcid;
   /* ngtcp2 1.x requires applications to associate an ngtcp2_conn with the
-     TLS object via SSL_set_app_data so that crypto callbacks (e.g.
-     add_handshake_data) can recover the conn. The ref must outlive ssl. */
+     TLS object so that crypto callbacks (e.g. add_handshake_data) can recover
+     the conn. picotls carries it in the ptls_t's data pointer, set via
+     ptls_get_data_ptr. The ref must outlive the ptls_t. */
   ngtcp2_crypto_conn_ref conn_ref;
   /* Back-reference to the Quic::Connection::Client Ruby object that owns
      this struct. ngtcp2 stream callbacks receive a void* user_data equal
@@ -38,8 +69,13 @@ quic_client_free(void *ptr)
 {
   quic_client_t *c = (quic_client_t *)ptr;
   if (c->conn) ngtcp2_conn_del(c->conn);
-  if (c->ssl) SSL_free(c->ssl);
-  if (c->ssl_ctx) SSL_CTX_free(c->ssl_ctx);
+  if (c->cptls.ptls) {
+    /* Safe even when configure_client_session never ran or failed midway. */
+    ngtcp2_crypto_picotls_deconfigure_session(&c->cptls);
+    ptls_free(c->cptls.ptls);
+  }
+  xfree(c->alpn);
+  xfree(c->alpn_buf);
   xfree(c);
 }
 
@@ -53,7 +89,7 @@ quic_client_size(const void *ptr)
 /* GC.compact may relocate the owner Client object. Follow it so the
    void* user_data ngtcp2 callbacks receive (which equals this struct,
    stored inside owner) keeps resolving @streams / @accept_queue. The
-   raw ngtcp2/SSL pointers are outside Ruby's heap and are left alone. */
+   raw ngtcp2/picotls pointers are outside Ruby's heap and are left alone. */
 static void
 quic_client_compact(void *ptr)
 {
@@ -354,13 +390,6 @@ quic_client_open(int argc, VALUE *argv, VALUE klass)
   quic_require_binary(remote_sockaddr, "remote_sockaddr");
   Check_Type(server_name, T_STRING);
 
-  if (!quic_crypto_initialized) {
-    if (ngtcp2_crypto_quictls_init() != 0) {
-      rb_raise(rb_eRuntimeError, "ngtcp2_crypto_quictls_init failed");
-    }
-    quic_crypto_initialized = 1;
-  }
-
   VALUE self = quic_client_alloc(klass);
   rb_ivar_set(self, rb_intern("@server_name"), server_name);
 
@@ -368,26 +397,13 @@ quic_client_open(int argc, VALUE *argv, VALUE klass)
   TypedData_Get_Struct(self, quic_client_t, &quic_client_data_type, c);
   c->owner = self;
 
-  c->ssl_ctx = SSL_CTX_new(TLS_client_method());
-  if (!c->ssl_ctx) {
-    rb_raise(rb_eRuntimeError, "SSL_CTX_new failed");
-  }
-  if (ngtcp2_crypto_quictls_configure_client_context(c->ssl_ctx) != 0) {
-    rb_raise(rb_eRuntimeError, "ngtcp2_crypto_quictls_configure_client_context failed");
-  }
-
-  c->ssl = SSL_new(c->ssl_ctx);
-  if (!c->ssl) {
-    rb_raise(rb_eRuntimeError, "SSL_new failed");
-  }
-  SSL_set_connect_state(c->ssl);
-  SSL_set_tlsext_host_name(c->ssl, RSTRING_PTR(server_name));
-
+  /* Copy the ALPN list into memory owned by c: picotls keeps the pointers
+     for the whole handshake, so ALLOCA_N would not survive. An empty list
+     means no ALPN extension, matching the old skip-SSL_set_alpn_protos path. */
   VALUE alpn_ary = rb_funcall(settings_v, rb_intern("alpn"), 0);
   Check_Type(alpn_ary, T_ARRAY);
   long n_alpn = RARRAY_LEN(alpn_ary);
   if (n_alpn > 0) {
-    /* RFC 7301 wire format: 1-byte length prefix + bytes, concatenated. */
     size_t total = 0;
     for (long i = 0; i < n_alpn; i++) {
       VALUE entry = RARRAY_AREF(alpn_ary, i);
@@ -396,30 +412,40 @@ quic_client_open(int argc, VALUE *argv, VALUE klass)
       if (len < 1 || len > 255) {
         rb_raise(rb_eArgError, "alpn entry must be 1-255 bytes (got %ld)", len);
       }
-      total += 1 + (size_t)len;
+      total += (size_t)len;
     }
-    /* total <= 256 * 256 = 65536; ALLOCA_N is safe at this size. */
-    unsigned char *wire = ALLOCA_N(unsigned char, total);
-    unsigned char *p = wire;
+    c->alpn_buf = ALLOC_N(uint8_t, total);
+    c->alpn = ALLOC_N(ptls_iovec_t, n_alpn);
+    uint8_t *p = c->alpn_buf;
     for (long i = 0; i < n_alpn; i++) {
       VALUE entry = RARRAY_AREF(alpn_ary, i);
-      long len = RSTRING_LEN(entry);
-      *p++ = (unsigned char)len;
-      memcpy(p, RSTRING_PTR(entry), (size_t)len);
+      size_t len = (size_t)RSTRING_LEN(entry);
+      memcpy(p, RSTRING_PTR(entry), len);
+      c->alpn[i] = ptls_iovec_init(p, len);
       p += len;
     }
-    /* SSL_set_alpn_protos returns 0 on success (counter-intuitive). */
-    if (SSL_set_alpn_protos(c->ssl, wire, (unsigned int)total) != 0) {
-      rb_raise(rb_eRuntimeError, "SSL_set_alpn_protos failed");
-    }
+    c->alpn_count = (size_t)n_alpn;
   }
 
-  /* Link the SSL handle back to this client so ngtcp2's crypto callbacks
-     (add_handshake_data, set_encryption_secrets, ...) can resolve the
-     ngtcp2_conn via SSL_get_app_data -> ngtcp2_crypto_conn_ref. */
+  /* quic_client_alloc already zeroed the struct, but calling ctx_init keeps
+     the ngtcp2-side initialization explicit and the TLS setup in one place. */
+  ngtcp2_crypto_picotls_ctx_init(&c->cptls);
+  c->tls_ctx = (ptls_context_t){
+    .random_bytes = ptls_openssl_random_bytes,
+    .get_time = &ptls_get_time,
+    .key_exchanges = quic_key_exchanges,
+    .cipher_suites = quic_cipher_suites,
+    /* No session resumption yet, so this has no effect today. Keep it so that
+       when resumption is added, PSK-only (non-forward-secret) resumption is
+       refused rather than silently accepted. */
+    .require_dhe_on_psk = 1,
+  };
+  if (ngtcp2_crypto_picotls_configure_client_context(&c->tls_ctx) != 0) {
+    rb_raise(rb_eRuntimeError, "ngtcp2_crypto_picotls_configure_client_context failed");
+  }
+
   c->conn_ref.get_conn = quic_client_get_conn;
   c->conn_ref.user_data = c;
-  SSL_set_app_data(c->ssl, &c->conn_ref);
 
   c->scid.datalen = 8;
   if (RAND_bytes(c->scid.data, 8) != 1) {
@@ -470,7 +496,32 @@ quic_client_open(int argc, VALUE *argv, VALUE klass)
     quic_raise_ngtcp2_error(rv);
   }
 
-  ngtcp2_conn_set_tls_native_handle(c->conn, c->ssl);
+  /* The TLS session is built last: configure_client_session derives the QUIC
+     transport parameters from the conn, so it needs the conn to exist. */
+  c->cptls.ptls = ptls_client_new(&c->tls_ctx);
+  if (c->cptls.ptls == NULL) {
+    rb_raise(rb_eRuntimeError, "ptls_client_new failed");
+  }
+  /* Let ngtcp2's crypto callbacks (add_handshake_data,
+     set_encryption_secrets, ...) resolve the ngtcp2_conn from the ptls_t. */
+  *ptls_get_data_ptr(c->cptls.ptls) = &c->conn_ref;
+  /* [0] is filled in by configure_client_session with the QUIC transport
+     parameters; [1] terminates the list. */
+  c->tls_exts[0].type = UINT16_MAX;
+  c->tls_exts[1].type = UINT16_MAX;
+  c->cptls.handshake_properties.additional_extensions = c->tls_exts;
+  if (ngtcp2_crypto_picotls_configure_client_session(&c->cptls, c->conn) != 0) {
+    rb_raise(rb_eRuntimeError, "ngtcp2_crypto_picotls_configure_client_session failed");
+  }
+  c->cptls.handshake_properties.client.negotiated_protocols.list = c->alpn;
+  c->cptls.handshake_properties.client.negotiated_protocols.count = c->alpn_count;
+  /* ptls_set_server_name copies the name. */
+  if (ptls_set_server_name(c->cptls.ptls, RSTRING_PTR(server_name),
+                           (size_t)RSTRING_LEN(server_name)) != 0) {
+    rb_raise(rb_eRuntimeError, "ptls_set_server_name failed");
+  }
+
+  ngtcp2_conn_set_tls_native_handle(c->conn, &c->cptls);
 
   /* Stream registry: stream_id (Integer) -> Quic::Stream.
      Populated by #open_bidi_stream / #open_uni_stream and the stream_open

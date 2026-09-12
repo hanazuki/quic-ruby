@@ -87,6 +87,10 @@ ngtcp2.configure_options = [
   # Skip the quictls/libressl/ossl helpers; only libngtcp2_crypto_picotls.
   "--without-openssl",
   "--with-picotls",
+  # crypto/picotls declares lib_LIBRARIES, not lib_LTLIBRARIES, so it is built
+  # by plain ar rather than libtool and --with-pic does not reach it. Without
+  # -fPIC the archive cannot be linked into quic.so.
+  "CFLAGS=-g -O2 -fPIC",
   "PKG_CONFIG_LIBDIR=#{libressl.path}/lib/pkgconfig",
   "PICOTLS_CFLAGS=-I#{picotls.include_path}",
   "PICOTLS_LIBS=-L#{picotls.lib_path} -lpicotls"
