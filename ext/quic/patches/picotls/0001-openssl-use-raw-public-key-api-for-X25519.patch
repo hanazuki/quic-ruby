@@ -1,0 +1,74 @@
+Subject: [PATCH] openssl: use the raw public key API for X25519
+
+LibreSSL does not provide EVP_PKEY_get1_tls_encodedpoint() /
+EVP_PKEY_set1_tls_encodedpoint(), so picotls disables ptls_openssl_x25519
+when built against LibreSSL. Switch the EVP-based X25519 key exchange to
+EVP_PKEY_get_raw_public_key() / EVP_PKEY_new_raw_public_key() and drop the
+LibreSSL exclusion.
+
+Verified with LibreSSL 4.3.1 and OpenSSL 3.5.7 (picotls test-openssl.t,
+including x25519-to-minicrypto / x25519-from-minicrypto).
+
+Not upstream. Requires OpenSSL >= 1.1.1 (1.1.0 lacks the raw key API).
+Applies to h2o/picotls@b84869f41414b6d0148db7728f1cf12f5b544874.
+
+diff --git a/include/picotls/openssl.h b/include/picotls/openssl.h
+index 37a0740..04e4653 100644
+--- a/include/picotls/openssl.h
++++ b/include/picotls/openssl.h
+@@ -60,7 +60,7 @@ extern ptls_key_exchange_algorithm_t ptls_openssl_secp521r1;
+ #ifdef EVP_PKEY_ED25519
+ #define PTLS_OPENSSL_HAVE_ED25519 1
+ #endif
+-#if defined(NID_X25519) && !defined(LIBRESSL_VERSION_NUMBER)
++#if defined(NID_X25519)
+ #define PTLS_OPENSSL_HAVE_X25519 1
+ #define PTLS_OPENSSL_HAS_X25519 1 /* deprecated; use HAVE_ */
+ extern ptls_key_exchange_algorithm_t ptls_openssl_x25519;
+diff --git a/lib/openssl.c b/lib/openssl.c
+index d6d073b..1c7e492 100644
+--- a/lib/openssl.c
++++ b/lib/openssl.c
+@@ -559,15 +559,7 @@ static int evp_keyex_on_exchange(ptls_key_exchange_context_t **_ctx, int release
+ #undef X25519_KEY_SIZE
+ #endif
+ 
+-    if ((evppeer = EVP_PKEY_new()) == NULL) {
+-        ret = PTLS_ERROR_NO_MEMORY;
+-        goto Exit;
+-    }
+-    if (EVP_PKEY_copy_parameters(evppeer, ctx->privkey) <= 0) {
+-        ret = PTLS_ERROR_LIBRARY;
+-        goto Exit;
+-    }
+-    if (EVP_PKEY_set1_tls_encodedpoint(evppeer, peerkey.base, peerkey.len) <= 0) {
++    if ((evppeer = EVP_PKEY_new_raw_public_key(EVP_PKEY_id(ctx->privkey), NULL, peerkey.base, peerkey.len)) == NULL) {
+         ret = PTLS_ERROR_LIBRARY;
+         goto Exit;
+     }
+@@ -629,10 +621,21 @@ static int evp_keyex_init(ptls_key_exchange_algorithm_t *algo, ptls_key_exchange
+     *ctx = (struct st_evp_keyex_context_t){{algo, {NULL}, evp_keyex_on_exchange}, pkey};
+ 
+     /* set public key */
+-    if ((ctx->super.pubkey.len = EVP_PKEY_get1_tls_encodedpoint(ctx->privkey, &ctx->super.pubkey.base)) == 0) {
+-        ctx->super.pubkey.base = NULL;
+-        ret = PTLS_ERROR_NO_MEMORY;
+-        goto Exit;
++    {
++        size_t publen = 0;
++        if (EVP_PKEY_get_raw_public_key(ctx->privkey, NULL, &publen) != 1 || publen == 0) {
++            ret = PTLS_ERROR_LIBRARY;
++            goto Exit;
++        }
++        if ((ctx->super.pubkey.base = OPENSSL_malloc(publen)) == NULL) {
++            ret = PTLS_ERROR_NO_MEMORY;
++            goto Exit;
++        }
++        if (EVP_PKEY_get_raw_public_key(ctx->privkey, ctx->super.pubkey.base, &publen) != 1) {
++            ret = PTLS_ERROR_LIBRARY;
++            goto Exit;
++        }
++        ctx->super.pubkey.len = publen;
+     }
+ 
+     *_ctx = &ctx->super;
