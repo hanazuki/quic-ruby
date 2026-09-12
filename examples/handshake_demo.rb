@@ -33,7 +33,8 @@ client = Quic::Connection::Client._open(
 )
 
 puts "ngtcp2: #{Quic.library_versions[:ngtcp2]}"
-puts "TLS:    #{Quic.library_versions[:openssl]}"
+puts "picotls: #{Quic.library_versions[:picotls]}"
+puts "libcrypto: #{Quic.library_versions[:openssl]}"
 puts "Target: #{TARGET_HOST} (#{addr.ip_address}:#{addr.ip_port})"
 puts
 
