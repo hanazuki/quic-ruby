@@ -3,7 +3,7 @@
 require "test_helper"
 require "socket"
 
-class TestQuicE2E < Minitest::Test
+class TestQUICE2E < Minitest::Test
   TARGET_HOST = "cloudflare-quic.com"
   TARGET_PORT = 443
   TIMEOUT_SEC = 10
@@ -16,7 +16,7 @@ class TestQuicE2E < Minitest::Test
     # Resolve once to IPv4 and reuse the same Addrinfo for the socket and the
     # connection path. cloudflare-quic.com has multiple A/AAAA records and the
     # default Addrinfo.udp picks any of them, so a separate resolution inside
-    # Quic::Connection::Client.new vs. UDPSocket#connect can return different
+    # QUIC::Connection::Client.new vs. UDPSocket#connect can return different
     # IPs (or different address families) and ngtcp2 then rejects every reply
     # with "ignore packet from unknown path". Calling _open directly with a
     # pre-resolved sockaddr ensures both sides agree on the path.
@@ -27,12 +27,12 @@ class TestQuicE2E < Minitest::Test
     sock = UDPSocket.new
     sock.connect(addr.ip_address, addr.ip_port)
 
-    settings = Quic::Settings.default.with(alpn: ["h3"])
-    client = Quic::Connection::Client._open(
+    settings = QUIC::Settings.default.with(alpn: ["h3"])
+    client = QUIC::Connection::Client._open(
       local_sockaddr: local_sockaddr,
       remote_sockaddr: remote_sockaddr,
       server_name: TARGET_HOST,
-      transport_params: Quic::TransportParams.default,
+      transport_params: QUIC::TransportParams.default,
       settings: settings
     )
 

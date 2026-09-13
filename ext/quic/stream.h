@@ -3,9 +3,9 @@
 
 #include "quic.h"
 
-extern VALUE rb_cQuicStream;
+extern VALUE rb_cQUICStream;
 
-void Init_quic_stream(VALUE rb_mQuicArg);
+void Init_quic_stream(VALUE rb_mQUICArg);
 
 /* Internal helpers used by connection_client.c stream callbacks and
    write_pkt's stream-aware path. */
@@ -37,7 +37,7 @@ typedef struct {
 
 extern const rb_data_type_t quic_stream_data_type;
 
-/* Allocate a new Quic::Stream Ruby object with a zero-initialized
+/* Allocate a new QUIC::Stream Ruby object with a zero-initialized
    quic_stream_t. Caller fills stream_id and ivars (@id / @client /
    @pending_chunks / @recv_buffer). */
 VALUE quic_stream_new(int64_t stream_id, VALUE client);

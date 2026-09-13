@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-module Quic
+module QUIC
   TransportParams = Data.define(
     :initial_max_stream_data_bidi_local,
     :initial_max_stream_data_bidi_remote,

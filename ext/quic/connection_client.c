@@ -55,7 +55,7 @@ typedef struct {
      the conn. picotls carries it in the ptls_t's data pointer, set via
      ptls_get_data_ptr. The ref must outlive the ptls_t. */
   ngtcp2_crypto_conn_ref conn_ref;
-  /* Back-reference to the Quic::Connection::Client Ruby object that owns
+  /* Back-reference to the QUIC::Connection::Client Ruby object that owns
      this struct. ngtcp2 stream callbacks receive a void* user_data equal
      to this struct, and they look up @streams via owner. We are stored
      INSIDE owner via TypedData_Wrap_Struct, so owner is guaranteed alive
@@ -98,7 +98,7 @@ quic_client_compact(void *ptr)
 }
 
 static const rb_data_type_t quic_client_data_type = {
-  "Quic::Connection::Client",
+  "QUIC::Connection::Client",
   {NULL, quic_client_free, quic_client_size, quic_client_compact,},
   NULL, NULL,
   RUBY_TYPED_FREE_IMMEDIATELY,
@@ -224,7 +224,7 @@ quic_fill_settings(ngtcp2_settings *settings, VALUE st)
   settings->no_pmtud = RTEST(no_pmtud) ? 1 : 0;
 }
 
-/* Shared helper: look up the Quic::Stream registered for stream_id in the
+/* Shared helper: look up the QUIC::Stream registered for stream_id in the
    owner Client's @streams Hash. Returns Qnil if not found (which can happen
    if the stream was already removed by a previous stream_close callback). */
 static VALUE
@@ -523,7 +523,7 @@ quic_client_open(int argc, VALUE *argv, VALUE klass)
 
   ngtcp2_conn_set_tls_native_handle(c->conn, &c->cptls);
 
-  /* Stream registry: stream_id (Integer) -> Quic::Stream.
+  /* Stream registry: stream_id (Integer) -> QUIC::Stream.
      Populated by #open_bidi_stream / #open_uni_stream and the stream_open
      callback. Entries are removed in the stream_close callback. */
   rb_ivar_set(self, rb_intern("@streams"), rb_hash_new());
@@ -876,8 +876,8 @@ quic_client_close_m(int argc, VALUE *argv, VALUE self)
 
   VALUE sock = rb_ivar_get(self, rb_intern("@sock"));
   if (NIL_P(sock)) {
-    rb_raise(rb_eQuicErrorNotBound,
-             "Quic::Connection::Client#bind(sock) has not been called");
+    rb_raise(rb_eQUICErrorNotBound,
+             "QUIC::Connection::Client#bind(sock) has not been called");
   }
 
   ngtcp2_ccerr ccerr;
@@ -920,19 +920,19 @@ quic_client_close_m(int argc, VALUE *argv, VALUE self)
 }
 
 void
-Init_quic_connection_client(VALUE rb_mQuicConnectionArg)
+Init_quic_connection_client(VALUE rb_mQUICConnectionArg)
 {
-  rb_cQuicConnectionClient = rb_define_class_under(rb_mQuicConnectionArg, "Client", rb_cObject);
-  rb_define_alloc_func(rb_cQuicConnectionClient, quic_client_alloc);
-  rb_define_singleton_method(rb_cQuicConnectionClient, "_open", quic_client_open, -1);
-  rb_define_method(rb_cQuicConnectionClient, "write_pkt", quic_client_write_pkt, -1);
-  rb_define_method(rb_cQuicConnectionClient, "read_pkt",  quic_client_read_pkt,  -1);
-  rb_define_method(rb_cQuicConnectionClient, "expiry", quic_client_expiry, 0);
-  rb_define_method(rb_cQuicConnectionClient, "handle_expiry", quic_client_handle_expiry, 0);
-  rb_define_method(rb_cQuicConnectionClient, "handshake_completed?", quic_client_handshake_completed_p, 0);
-  rb_define_method(rb_cQuicConnectionClient, "in_closing_period?", quic_client_in_closing_period_p, 0);
-  rb_define_method(rb_cQuicConnectionClient, "in_draining_period?", quic_client_in_draining_period_p, 0);
-  rb_define_method(rb_cQuicConnectionClient, "open_bidi_stream", quic_client_open_bidi_stream, 0);
-  rb_define_method(rb_cQuicConnectionClient, "open_uni_stream", quic_client_open_uni_stream, 0);
-  rb_define_method(rb_cQuicConnectionClient, "close", quic_client_close_m, -1);
+  rb_cQUICConnectionClient = rb_define_class_under(rb_mQUICConnectionArg, "Client", rb_cObject);
+  rb_define_alloc_func(rb_cQUICConnectionClient, quic_client_alloc);
+  rb_define_singleton_method(rb_cQUICConnectionClient, "_open", quic_client_open, -1);
+  rb_define_method(rb_cQUICConnectionClient, "write_pkt", quic_client_write_pkt, -1);
+  rb_define_method(rb_cQUICConnectionClient, "read_pkt",  quic_client_read_pkt,  -1);
+  rb_define_method(rb_cQUICConnectionClient, "expiry", quic_client_expiry, 0);
+  rb_define_method(rb_cQUICConnectionClient, "handle_expiry", quic_client_handle_expiry, 0);
+  rb_define_method(rb_cQUICConnectionClient, "handshake_completed?", quic_client_handshake_completed_p, 0);
+  rb_define_method(rb_cQUICConnectionClient, "in_closing_period?", quic_client_in_closing_period_p, 0);
+  rb_define_method(rb_cQUICConnectionClient, "in_draining_period?", quic_client_in_draining_period_p, 0);
+  rb_define_method(rb_cQUICConnectionClient, "open_bidi_stream", quic_client_open_bidi_stream, 0);
+  rb_define_method(rb_cQUICConnectionClient, "open_uni_stream", quic_client_open_uni_stream, 0);
+  rb_define_method(rb_cQUICConnectionClient, "close", quic_client_close_m, -1);
 }

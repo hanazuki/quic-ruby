@@ -59,12 +59,12 @@ addr = Addrinfo.getaddrinfo(TARGET_HOST, TARGET_PORT, Socket::AF_INET, Socket::S
 sock = UDPSocket.new
 sock.connect(addr.ip_address, addr.ip_port)
 
-client = Quic::Connection::Client._open(
+client = QUIC::Connection::Client._open(
   local_sockaddr: Addrinfo.udp("0.0.0.0", 0).to_sockaddr,
   remote_sockaddr: addr.to_sockaddr,
   server_name: TARGET_HOST,
-  transport_params: Quic::TransportParams.default,
-  settings: Quic::Settings.default.with(alpn: ["doq"])
+  transport_params: QUIC::TransportParams.default,
+  settings: QUIC::Settings.default.with(alpn: ["doq"])
 )
 
 puts "resolver: #{TARGET_HOST} (#{addr.ip_address}:#{addr.ip_port}), alpn doq"

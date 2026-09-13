@@ -1,4 +1,4 @@
-module Quic
+module QUIC
   VERSION: String
 
   def self.library_versions: () -> { ngtcp2: String, openssl: String, picotls: String }
@@ -112,13 +112,13 @@ module Quic
       def accept_stream: (?timeout: Numeric?) -> Stream?
 
       # Non-blocking #accept_stream. Returns the next queued server stream,
-      # or raises Quic::Error::WaitReadable when the queue is empty.
+      # or raises QUIC::Error::WaitReadable when the queue is empty.
       def accept_stream_nonblock: () -> Stream
 
       # Sends an application CONNECTION_CLOSE (frame type 0x1d) to the peer
       # carrying error_code and reason, then transitions the underlying
       # ngtcp2_conn to the closing period. Requires Client#bind to have been
-      # called; raises Quic::Error::NotBound otherwise. A second #close call
+      # called; raises QUIC::Error::NotBound otherwise. A second #close call
       # after the connection has already entered the closing or draining
       # period is a no-op.
       def close: (?error_code: Integer, ?reason: String) -> nil
@@ -138,12 +138,12 @@ module Quic
     # Blocks (by internally calling Client#pump_once) until the peer's flow
     # control window has room for the full payload, then queues all bytes
     # and returns data.bytesize. Requires the parent Client to be bound to
-    # a socket via Client#bind; raises Quic::Error::NotBound otherwise.
+    # a socket via Client#bind; raises QUIC::Error::NotBound otherwise.
     def write: (String data, ?fin: bool) -> Integer
 
     # Non-blocking variant. Queues as much of `data` as the current flow
     # control window allows and returns the byte count actually queued.
-    # Raises Quic::Error::WaitWritable (mixed in with IO::WaitWritable) when
+    # Raises QUIC::Error::WaitWritable (mixed in with IO::WaitWritable) when
     # the window is zero and the payload is non-empty. If only a partial
     # prefix is accepted, `fin: true` is NOT propagated; the caller must
     # re-issue with `fin: true` on the trailing chunk.
@@ -154,7 +154,7 @@ module Quic
     def close: () -> nil
 
     # Aborts the send side with RESET_STREAM carrying error_code (default 0).
-    # After #reset, #write / #write_nonblock raise Quic::Error::StreamClosed.
+    # After #reset, #write / #write_nonblock raise QUIC::Error::StreamClosed.
     # The read side is unaffected. Idempotent: a second #reset is a no-op.
     def reset: (?Integer error_code) -> nil
   end

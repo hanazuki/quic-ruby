@@ -25,12 +25,12 @@ addr = Addrinfo.getaddrinfo(TARGET_HOST, TARGET_PORT, Socket::AF_INET, Socket::S
 sock = UDPSocket.new
 sock.connect(addr.ip_address, addr.ip_port)
 
-settings = Quic::Settings.default.with(alpn: [TARGET_ALPN])
-client = Quic::Connection::Client._open(
+settings = QUIC::Settings.default.with(alpn: [TARGET_ALPN])
+client = QUIC::Connection::Client._open(
   local_sockaddr: Addrinfo.udp("0.0.0.0", 0).to_sockaddr,
   remote_sockaddr: addr.to_sockaddr,
   server_name: TARGET_HOST,
-  transport_params: Quic::TransportParams.default,
+  transport_params: QUIC::TransportParams.default,
   settings: settings
 )
 client.bind(sock).run

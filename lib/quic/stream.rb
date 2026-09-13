@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
-module Quic
-  # Quic::Stream is defined in the C extension (ext/quic/stream.c); this file
+module QUIC
+  # QUIC::Stream is defined in the C extension (ext/quic/stream.c); this file
   # reopens it to add the bits that are easier to express in Ruby:
   # #initiator (a tiny lookup over @id) and the blocking #read which wraps
   # the C #read_nonblock with an internal Client#pump_once loop.
@@ -27,7 +27,7 @@ module Quic
     #
     # Both branches drain first and pump only when there is nothing to drain.
     # #read_nonblock already distinguishes the two states we care about --
-    # Quic::Error::WaitReadable for "nothing buffered yet" and EOFError for
+    # QUIC::Error::WaitReadable for "nothing buffered yet" and EOFError for
     # "nothing buffered and FIN seen" -- so the loop needs no separate
     # predicate over @recv_buffer / #eof?.
     def read(length = nil)
@@ -36,7 +36,7 @@ module Quic
         out.force_encoding(Encoding::BINARY)
         loop do
           out << read_nonblock(4096)
-        rescue Quic::Error::WaitReadable
+        rescue QUIC::Error::WaitReadable
           @client.pump_once
         rescue EOFError
           break
@@ -45,7 +45,7 @@ module Quic
       else
         loop do
           return read_nonblock(length)
-        rescue Quic::Error::WaitReadable
+        rescue QUIC::Error::WaitReadable
           @client.pump_once
         rescue EOFError
           return nil

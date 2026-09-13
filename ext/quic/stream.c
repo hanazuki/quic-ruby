@@ -2,7 +2,7 @@
 
 #include <string.h>
 
-VALUE rb_cQuicStream;
+VALUE rb_cQUICStream;
 
 static void
 quic_stream_free(void *ptr)
@@ -18,7 +18,7 @@ quic_stream_size(const void *ptr)
 }
 
 const rb_data_type_t quic_stream_data_type = {
-  "Quic::Stream",
+  "QUIC::Stream",
   {NULL, quic_stream_free, quic_stream_size,},
   NULL, NULL,
   RUBY_TYPED_FREE_IMMEDIATELY,
@@ -35,7 +35,7 @@ quic_stream_alloc(VALUE klass)
 VALUE
 quic_stream_new(int64_t stream_id, VALUE client)
 {
-  VALUE self = quic_stream_alloc(rb_cQuicStream);
+  VALUE self = quic_stream_alloc(rb_cQUICStream);
   quic_stream_t *s;
   TypedData_Get_Struct(self, quic_stream_t, &quic_stream_data_type, s);
   s->stream_id = stream_id;
@@ -53,7 +53,7 @@ quic_stream_new(int64_t stream_id, VALUE client)
    quic_stream_write_m and #write_nonblock returns a partial byte count in
    quic_stream_write_nonblock_m). This helper is reached only after the
    caller has confirmed the bytes fit in the current send window, so it
-   never raises Quic::Error::WaitWritable on its own. */
+   never raises QUIC::Error::WaitWritable on its own. */
 static VALUE
 quic_stream_enqueue(VALUE self, VALUE data, bool fin)
 {
@@ -61,10 +61,10 @@ quic_stream_enqueue(VALUE self, VALUE data, bool fin)
   TypedData_Get_Struct(self, quic_stream_t, &quic_stream_data_type, s);
 
   if (s->reset || s->closed) {
-    rb_raise(rb_eQuicErrorStreamClosed, "stream is closed");
+    rb_raise(rb_eQUICErrorStreamClosed, "stream is closed");
   }
   if (s->fin_sent) {
-    rb_raise(rb_eQuicErrorStreamClosed, "stream FIN already sent");
+    rb_raise(rb_eQUICErrorStreamClosed, "stream FIN already sent");
   }
 
   Check_Type(data, T_STRING);
@@ -110,7 +110,7 @@ quic_stream_window_left(VALUE client_v, quic_stream_t *s)
 /* Blocking write: block by repeatedly invoking Client#pump_once until the
    peer's flow control window has enough room for the full payload, then
    enqueue. IO#write-compatible: always queues all of `data`. Bare Streams
-   (built via Quic::Stream.allocate for unit tests, with @client = nil) skip
+   (built via QUIC::Stream.allocate for unit tests, with @client = nil) skip
    the window check entirely. */
 static VALUE
 quic_stream_write_m(int argc, VALUE *argv, VALUE self)
@@ -132,7 +132,7 @@ quic_stream_write_m(int argc, VALUE *argv, VALUE self)
     quic_stream_t *s;
     TypedData_Get_Struct(self, quic_stream_t, &quic_stream_data_type, s);
     /* Loop until the full payload would fit in the current window. pump_once
-       raises Quic::Error::NotBound if @client has no socket bound; that
+       raises QUIC::Error::NotBound if @client has no socket bound; that
        error surfaces verbatim. */
     while ((uint64_t)needed > quic_stream_window_left(client_v, s)) {
       rb_funcall(client_v, rb_intern("pump_once"), 0);
@@ -143,7 +143,7 @@ quic_stream_write_m(int argc, VALUE *argv, VALUE self)
 }
 
 /* Non-blocking write: enqueue at most `window_left` bytes from `data` and
-   return the count actually queued. Raises Quic::Error::WaitWritable if the
+   return the count actually queued. Raises QUIC::Error::WaitWritable if the
    window is zero and we have a non-empty payload to send. If only a partial
    prefix fits, FIN is NOT set on this call (caller re-issues with
    `fin: true` once the remainder is accepted) so we don't half-commit FIN.
@@ -172,7 +172,7 @@ quic_stream_write_nonblock_m(int argc, VALUE *argv, VALUE self)
   uint64_t avail = quic_stream_window_left(client_v, s);
 
   if (avail == 0) {
-    rb_raise(rb_eQuicErrorWaitWritable, "stream send window is full");
+    rb_raise(rb_eQUICErrorWaitWritable, "stream send window is full");
   }
 
   long take = ((uint64_t)needed <= avail) ? needed : (long)avail;
@@ -198,7 +198,7 @@ quic_stream_close_write_m(VALUE self)
    to drop the returned prefix.
 
    - buffer empty + fin_received: raise EOFError (IO#read_nonblock semantics)
-   - buffer empty + !fin_received: raise Quic::Error::WaitReadable
+   - buffer empty + !fin_received: raise QUIC::Error::WaitReadable
    - buffer non-empty: return min(length, buffer.bytesize) bytes
 */
 static VALUE
@@ -218,7 +218,7 @@ quic_stream_read_nonblock_m(VALUE self, VALUE length_v)
     if (s->fin_received) {
       rb_raise(rb_eEOFError, "end of file reached");
     }
-    rb_raise(rb_eQuicErrorWaitReadable, "no data available");
+    rb_raise(rb_eQUICErrorWaitReadable, "no data available");
   }
 
   long take = (length < have) ? length : have;
@@ -253,7 +253,7 @@ quic_stream_close_read_m(VALUE self)
   ngtcp2_conn *conn = quic_client_conn(client_v);
 
   /* ngtcp2_conn_shutdown_stream_read sends STOP_SENDING. app_error_code 0
-     since no Quic-level error API is exposed yet. */
+     since no QUIC-level error API is exposed yet. */
   int rv = ngtcp2_conn_shutdown_stream_read(conn, 0, s->stream_id, 0);
   if (rv != 0) quic_raise_ngtcp2_error(rv);
   return Qnil;
@@ -271,7 +271,7 @@ quic_stream_close_m(VALUE self)
 /* Abort the send side of the stream with RESET_STREAM
    (ngtcp2_conn_shutdown_stream_write), carrying the given application error
    code (default 0). After #reset, #write / #write_nonblock raise
-   Quic::Error::StreamClosed because quic_stream_enqueue rejects a stream
+   QUIC::Error::StreamClosed because quic_stream_enqueue rejects a stream
    with s->reset set. The read side is untouched (use #close_read /
    #close for STOP_SENDING). Idempotent: a second #reset is a no-op.
 
@@ -304,17 +304,17 @@ quic_stream_reset_m(int argc, VALUE *argv, VALUE self)
 }
 
 void
-Init_quic_stream(VALUE rb_mQuicArg)
+Init_quic_stream(VALUE rb_mQUICArg)
 {
-  rb_cQuicStream = rb_define_class_under(rb_mQuicArg, "Stream", rb_cObject);
-  rb_define_alloc_func(rb_cQuicStream, quic_stream_alloc);
-  rb_define_method(rb_cQuicStream, "write", quic_stream_write_m, -1);
-  rb_define_method(rb_cQuicStream, "write_nonblock", quic_stream_write_nonblock_m, -1);
-  rb_define_method(rb_cQuicStream, "close_write", quic_stream_close_write_m, 0);
-  rb_define_method(rb_cQuicStream, "read_nonblock", quic_stream_read_nonblock_m, 1);
-  rb_define_method(rb_cQuicStream, "eof?", quic_stream_eof_p, 0);
-  rb_define_method(rb_cQuicStream, "close_read", quic_stream_close_read_m, 0);
-  rb_define_method(rb_cQuicStream, "close", quic_stream_close_m, 0);
-  rb_define_method(rb_cQuicStream, "reset", quic_stream_reset_m, -1);
+  rb_cQUICStream = rb_define_class_under(rb_mQUICArg, "Stream", rb_cObject);
+  rb_define_alloc_func(rb_cQUICStream, quic_stream_alloc);
+  rb_define_method(rb_cQUICStream, "write", quic_stream_write_m, -1);
+  rb_define_method(rb_cQUICStream, "write_nonblock", quic_stream_write_nonblock_m, -1);
+  rb_define_method(rb_cQUICStream, "close_write", quic_stream_close_write_m, 0);
+  rb_define_method(rb_cQUICStream, "read_nonblock", quic_stream_read_nonblock_m, 1);
+  rb_define_method(rb_cQUICStream, "eof?", quic_stream_eof_p, 0);
+  rb_define_method(rb_cQUICStream, "close_read", quic_stream_close_read_m, 0);
+  rb_define_method(rb_cQUICStream, "close", quic_stream_close_m, 0);
+  rb_define_method(rb_cQUICStream, "reset", quic_stream_reset_m, -1);
   /* #read (blocking) and #initiator are defined in lib/quic/stream.rb. */
 }

@@ -4,7 +4,7 @@ require_relative "lib/quic/version"
 
 Gem::Specification.new do |spec|
   spec.name = "quic"
-  spec.version = Quic::VERSION
+  spec.version = QUIC::VERSION
   spec.authors = ["Yusuke Nakamura"]
   spec.email = ["yusuke1994525@gmail.com"]
 

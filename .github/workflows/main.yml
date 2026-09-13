@@ -127,4 +127,4 @@ jobs:
           [ "${exts}" = "--- []" ] || { echo "precompiled gem still declares extensions" >&2; exit 1; }
           gem install --local "${gem}"
           # Without bundle exec, so the shim has to pick lib/quic/<abi>/quic.so.
-          ruby -rquic -e 'p Quic::VERSION, Quic.library_versions; so = $LOADED_FEATURES.grep(%r{/quic/\d+\.\d+/quic\.so$}); abort "versioned .so not loaded" if so.empty?; puts so'
+          ruby -rquic -e 'p QUIC::VERSION, QUIC.library_versions; so = $LOADED_FEATURES.grep(%r{/quic/\d+\.\d+/quic\.so$}); abort "versioned .so not loaded" if so.empty?; puts so'

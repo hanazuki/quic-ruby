@@ -1,4 +1,4 @@
-# Quic
+# QUIC
 
 `quic` is a thin Ruby binding around [ngtcp2](https://github.com/ngtcp2/ngtcp2) for the QUIC transport protocol. TLS 1.3 is handled by [picotls](https://github.com/h2o/picotls), which uses the libcrypto of [LibreSSL](https://github.com/libressl/portable) for its cryptographic primitives and X.509 handling. All three dependencies are vendored at install time via [`mini_portile2`](https://github.com/flavorjones/mini_portile) (no system libraries required).
 
@@ -20,7 +20,7 @@ Everywhere else — musl-based distributions, other architectures, other Ruby ve
 
 - **Server certificates are not verified.** Neither the certificate chain nor the CertificateVerify signature against the leaf public key is checked, so there is no protection against an active attacker. Verification is planned but not implemented.
 - **No session resumption or 0-RTT.**
-- **No server side.** Only the client (`Quic::Connection::Client`) exists; there is no listen/accept.
+- **No server side.** Only the client (`QUIC::Connection::Client`) exists; there is no listen/accept.
 - **Key exchanges and cipher suites are fixed.** X25519, secp256r1 and secp384r1 with AES-128-GCM, AES-256-GCM and ChaCha20-Poly1305. They cannot be selected from Ruby.
 
 ## Development
@@ -43,4 +43,4 @@ This product includes software developed by the OpenSSL Project for use in the O
 
 ## Code of Conduct
 
-Everyone interacting in the Quic project's codebases, issue trackers, chat rooms and mailing lists is expected to follow the [code of conduct](https://github.com/unasuke/quic-ruby/blob/main/CODE_OF_CONDUCT.md).
+Everyone interacting in the quic-ruby project's codebases, issue trackers, chat rooms and mailing lists is expected to follow the [code of conduct](https://github.com/unasuke/quic-ruby/blob/main/CODE_OF_CONDUCT.md).

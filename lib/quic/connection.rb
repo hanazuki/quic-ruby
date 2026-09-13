@@ -2,7 +2,7 @@
 
 require "socket"
 
-module Quic
+module QUIC
   module Connection
     class Client
       attr_reader :remote_address
@@ -35,8 +35,8 @@ module Quic
           local_sockaddr: local_sockaddr,
           remote_sockaddr: remote_sockaddr,
           server_name: host,
-          transport_params: transport_params || Quic::TransportParams.default,
-          settings: settings || Quic::Settings.default
+          transport_params: transport_params || QUIC::TransportParams.default,
+          settings: settings || QUIC::Settings.default
         )
         client.instance_variable_set(:@host, host)
         client.instance_variable_set(:@port, port)
@@ -58,10 +58,10 @@ module Quic
       end
 
       # Drive the handshake to completion using the bound socket. Raises
-      # Quic::Error::NotBound if #bind has not been called. Propagates any
-      # Quic::Error subclass raised by #read_pkt / #handle_expiry.
+      # QUIC::Error::NotBound if #bind has not been called. Propagates any
+      # QUIC::Error subclass raised by #read_pkt / #handle_expiry.
       def run
-        raise Quic::Error::NotBound, "Quic::Connection::Client#bind(sock) has not been called" if @sock.nil?
+        raise QUIC::Error::NotBound, "QUIC::Connection::Client#bind(sock) has not been called" if @sock.nil?
 
         pump_until { handshake_completed? }
       end
@@ -72,7 +72,7 @@ module Quic
       # fire. Public-ish so Stream blocking ops can share it; documented as
       # "internal" for users.
       def pump_once(timeout: nil)
-        raise Quic::Error::NotBound, "Quic::Connection::Client#bind(sock) has not been called" if @sock.nil?
+        raise QUIC::Error::NotBound, "QUIC::Connection::Client#bind(sock) has not been called" if @sock.nil?
 
         while (pkt = write_pkt)
           @sock.send(pkt, 0)
@@ -110,7 +110,7 @@ module Quic
       # timeout: 0        return immediately; nil if the queue is empty
       # timeout: Numeric  block up to that many seconds, then return nil
       #
-      # Returns a Quic::Stream, or nil on timeout.
+      # Returns a QUIC::Stream, or nil on timeout.
       def accept_stream(timeout: nil)
         stream = @accept_queue.shift
         return stream unless stream.nil?
@@ -131,11 +131,11 @@ module Quic
       end
 
       # Non-blocking variant of #accept_stream. Returns the next queued
-      # server stream, or raises Quic::Error::WaitReadable (IO::WaitReadable
+      # server stream, or raises QUIC::Error::WaitReadable (IO::WaitReadable
       # mixin) when the queue is empty. Does not require #bind.
       def accept_stream_nonblock
         stream = @accept_queue.shift
-        raise Quic::Error::WaitReadable, "no server-initiated stream available" if stream.nil?
+        raise QUIC::Error::WaitReadable, "no server-initiated stream available" if stream.nil?
         stream
       end
 

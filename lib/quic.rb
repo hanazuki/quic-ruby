@@ -2,7 +2,7 @@
 
 require_relative "quic/version"
 
-module Quic
+module QUIC
   class Error < StandardError
     attr_reader :code
   end

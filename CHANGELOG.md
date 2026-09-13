@@ -10,6 +10,7 @@
 - `Quic::Connection::Client` is now GC.compact safe: the C-side struct's back-reference to the owning Ruby object is updated via a `dcompact` slot.
 - The TLS 1.3 handshake is now performed by [picotls](https://github.com/h2o/picotls) instead of LibreSSL's libssl. LibreSSL is still vendored and supplies libcrypto (cryptographic primitives and X.509). Server certificates were not verified before and are still not verified, but the omission now goes one step further: OpenSSL checks the CertificateVerify signature against the leaf public key even with verification disabled, while picotls skips that too.
 - `Quic.library_versions` now includes a `:picotls` key holding the commit hash picotls was built from. picotls has neither a version macro nor releases. The existing `:ngtcp2` and `:openssl` keys are unchanged; `:openssl` still reports the vendored LibreSSL.
+- The top-level namespace is now `QUIC` instead of `Quic`, and every constant moves with it: `QUIC::Connection::Client`, `QUIC::Stream`, `QUIC::Settings`, `QUIC::TransportParams`, and `QUIC::Error` together with its subclasses. No `Quic` alias is left behind. The gem name and `require "quic"` are unchanged. The entries above were written before the rename and keep the old spelling.
 
 ## [0.0.1] - 2026-05-28
 

@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-module Quic
+module QUIC
   Settings = Data.define(
     :cc_algo,
     :initial_rtt,

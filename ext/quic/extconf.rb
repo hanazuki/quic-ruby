@@ -129,7 +129,7 @@ abort "libngtcp2_crypto_picotls not linkable" unless
   have_func("ngtcp2_crypto_picotls_configure_client_context", %w[picotls.h ngtcp2/ngtcp2_crypto_picotls.h])
 abort "libcrypto not linkable" unless have_func("OpenSSL_version", "openssl/crypto.h")
 
-# picotls has neither a version macro nor releases, so Quic.library_versions
+# picotls has neither a version macro nor releases, so QUIC.library_versions
 # reports the commit the extension was built against.
 append_cflags("-DQUIC_PICOTLS_COMMIT=\\\"#{PICOTLS_COMMIT}\\\"")
 append_cflags("-fvisibility=hidden")
