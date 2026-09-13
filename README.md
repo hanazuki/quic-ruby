@@ -1,6 +1,6 @@
 # QUIC
 
-`quic` is a thin Ruby binding around [ngtcp2](https://github.com/ngtcp2/ngtcp2) for the QUIC transport protocol. TLS 1.3 is handled by [picotls](https://github.com/h2o/picotls), which uses the libcrypto of [LibreSSL](https://github.com/libressl/portable) for its cryptographic primitives and X.509 handling. All three dependencies are vendored at install time via [`mini_portile2`](https://github.com/flavorjones/mini_portile) (no system libraries required).
+`quic` is a thin Ruby binding around [ngtcp2](https://github.com/ngtcp2/ngtcp2) for the QUIC transport protocol. TLS 1.3 is handled by [picotls](https://github.com/h2o/picotls). ngtcp2 and picotls are vendored at install time via [`mini_portile2`](https://github.com/flavorjones/mini_portile) and linked statically; the cryptographic primitives and X.509 handling come from the host's OpenSSL (or LibreSSL), linked dynamically.
 
 The gem is intentionally optimized for **synchronous I/O and `String`-based buffers**. It exposes ngtcp2 primitives (`#read_pkt` / `#write_pkt` / `#expiry` / `#handle_expiry`) and lets the caller own the I/O loop. If you need Fiber Scheduler / `IO::Buffer` / `async` ecosystem integration, see [`socketry/protocol-quic`](https://github.com/socketry/protocol-quic) instead.
 
@@ -12,9 +12,21 @@ This project is in early development; the public API is not yet stable.
 gem "quic"
 ```
 
-On `x86_64-linux-gnu` with Ruby 3.4 or 4.0, a precompiled gem is installed. It bundles `quic.so` with LibreSSL, picotls and ngtcp2 statically linked, so no build tools are required.
+The gem is built from source at install time, so the host needs:
 
-Everywhere else — musl-based distributions, other architectures, other Ruby versions — the source gem is installed instead. It downloads and builds LibreSSL, picotls and ngtcp2 during installation, so the host needs `autoconf`, `automake`, `libtool`, `pkg-config`, a C toolchain, and either `patch` or `git` (picotls is patched before it is built; `mini_portile2` uses `git apply` when `git` is available and falls back to `patch -p1`).
+- OpenSSL 1.1.1 or later, **with its development package** (`libssl-dev`, `openssl-devel`, …). LibreSSL works too — see below.
+- `autoconf`, `automake`, `libtool`, `pkg-config` and a C toolchain, to build ngtcp2.
+- either `patch` or `git`, to apply the picotls patch in `ext/quic/patches/` (`mini_portile2` uses `git apply` when `git` is available and falls back to `patch -p1`).
+
+OpenSSL is located through `pkg-config`. If it lives somewhere `pkg-config` does not look, point at the prefix:
+
+```console
+$ gem install quic -- --with-openssl-dir=$(brew --prefix openssl@3)
+```
+
+Linking the host's libcrypto rather than bundling one is deliberate: the process then shares a single libcrypto with Ruby's own `openssl` extension. Two copies in one process interpose on each other's global symbols, which silently misroutes calls and can crash the VM.
+
+**LibreSSL** is supported and exercised: `ext/quic/patches/picotls/` carries a patch that restores picotls's X25519 key exchange there, which upstream disables because LibreSSL lacks `EVP_PKEY_{get1,set1}_tls_encodedpoint()`. The patch is a no-op on OpenSSL, where X25519 is available anyway.
 
 ## Limitations
 
@@ -37,9 +49,7 @@ Bug reports and pull requests are welcome on GitHub at https://github.com/unasuk
 
 The gem is available as open source under the terms of the [MIT License](https://opensource.org/licenses/MIT).
 
-The precompiled `x86_64-linux-gnu` gem statically links [LibreSSL](https://www.libressl.org/) (OpenSSL/SSLeay and ISC licenses), [picotls](https://github.com/h2o/picotls) (MIT, with one file under an ISC-style license) and [ngtcp2](https://github.com/ngtcp2/ngtcp2) (MIT, with portions under the Chromium BSD-3-Clause license). Their license texts are in [LICENSE-DEPENDENCIES.txt](LICENSE-DEPENDENCIES.txt).
-
-This product includes software developed by the OpenSSL Project for use in the OpenSSL Toolkit (http://www.openssl.org/). This product includes cryptographic software written by Eric Young (eay@cryptsoft.com).
+The gem ships no third-party binaries: [ngtcp2](https://github.com/ngtcp2/ngtcp2) (MIT, with portions under the Chromium BSD-3-Clause license) and [picotls](https://github.com/h2o/picotls) (MIT, with one file under an ISC-style license) are downloaded and built on the installing machine, and libcrypto is the host's. Their license texts are in [LICENSE-DEPENDENCIES.txt](LICENSE-DEPENDENCIES.txt) for reference.
 
 ## Code of Conduct
 

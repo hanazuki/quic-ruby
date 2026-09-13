@@ -7,10 +7,12 @@ class TestQUIC < Minitest::Test
     refute_nil ::QUIC::VERSION
   end
 
-  def test_library_versions_reports_libressl
+  # libcrypto comes from the host, so which of the two this reports depends on
+  # where the extension was built. picotls's OpenSSL backend supports both.
+  def test_library_versions_reports_host_libcrypto
     versions = QUIC.library_versions
     assert_kind_of String, versions[:ngtcp2]
-    assert_match(/LibreSSL/, versions[:openssl])
+    assert_match(/\A(OpenSSL|LibreSSL)\b/, versions[:openssl])
   end
 
   # picotls has no version macro and no releases, so extconf.rb bakes in the

@@ -8,9 +8,11 @@ Gem::Specification.new do |spec|
   spec.authors = ["Yusuke Nakamura"]
   spec.email = ["yusuke1994525@gmail.com"]
 
-  spec.summary = "Thin Ruby binding around ngtcp2 for the QUIC transport protocol, using picotls for TLS 1.3 with LibreSSL's libcrypto."
-  spec.description = "A thin Ruby binding around ngtcp2 for the QUIC transport protocol, using picotls for TLS 1.3 with LibreSSL's libcrypto. " \
-    "All three are vendored via mini_portile2 at install time; no system libraries required. " \
+  spec.summary = "Thin Ruby binding around ngtcp2 for the QUIC transport protocol, using picotls for TLS 1.3 over the system OpenSSL."
+  spec.description = "A thin Ruby binding around ngtcp2 for the QUIC transport protocol, using picotls for TLS 1.3. " \
+    "ngtcp2 and picotls are vendored via mini_portile2 at install time and linked statically; the crypto primitives " \
+    "and X.509 come from the host's OpenSSL (or LibreSSL), linked dynamically, so the process shares one libcrypto " \
+    "with Ruby's openssl extension. " \
     "The API is intentionally optimized for synchronous I/O and String-based buffers. " \
     "Public API is not yet stable."
   spec.homepage = "https://github.com/unasuke/quic-ruby"
@@ -39,9 +41,8 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
   spec.extensions = ["ext/quic/extconf.rb"]
 
-  # ngtcp2, picotls and LibreSSL are vendored and built from source via
-  # mini_portile2 when installing the platform-independent (source) gem. Precompiled platform gems
-  # ship a prebuilt .so and drop this dependency (see the Rakefile cross_compiling block).
+  # ngtcp2 and picotls are downloaded and built from source via mini_portile2
+  # at install time.
   spec.add_dependency "mini_portile2"
 
   # For more information and examples about making a new gem, check out our
