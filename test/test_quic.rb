@@ -264,6 +264,17 @@ class TestQuic < Minitest::Test
     assert_raises(Quic::Error::NotBound) { stream.write("x") }
   end
 
+  # Stream#read must hand back whatever is already buffered before it goes
+  # anywhere near the I/O loop. A bare Stream has no @client, so a read that
+  # pumps first blows up with NoMethodError instead of returning the bytes.
+  def test_stream_read_returns_buffered_bytes_without_pumping
+    stream = build_stream(id: 0)
+    stream.instance_variable_get(:@recv_buffer) << "hello"
+
+    assert_equal "hel", stream.read(3)
+    assert_equal "lo", stream.read(2)
+  end
+
   def test_client_close_raises_not_bound_without_bind
     client = Quic::Connection::Client.new(host: "127.0.0.1", port: 443)
     assert_raises(Quic::Error::NotBound) { client.close }

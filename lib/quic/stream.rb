@@ -4,7 +4,7 @@ module Quic
   # Quic::Stream is defined in the C extension (ext/quic/stream.c); this file
   # reopens it to add the bits that are easier to express in Ruby:
   # #initiator (a tiny lookup over @id) and the blocking #read which wraps
-  # the C #read_nonblock with an internal Client#pump_until loop.
+  # the C #read_nonblock with an internal Client#pump_once loop.
   class Stream
     INITIATORS = %i[client_bidi server_bidi client_uni server_uni].freeze
 
@@ -24,28 +24,31 @@ module Quic
     #                 return up to `length` bytes, return nil at EOF.
     #   read(nil):    block until EOF, return everything that was received
     #                 (an empty String if nothing arrived before FIN).
+    #
+    # Both branches drain first and pump only when there is nothing to drain.
+    # #read_nonblock already distinguishes the two states we care about --
+    # Quic::Error::WaitReadable for "nothing buffered yet" and EOFError for
+    # "nothing buffered and FIN seen" -- so the loop needs no separate
+    # predicate over @recv_buffer / #eof?.
     def read(length = nil)
       if length.nil?
-        @client.pump_until { eof? }
         out = +""
         out.force_encoding(Encoding::BINARY)
-        until eof?
-          # Should not happen given pump_until's predicate, but defensive.
-          out << read_nonblock(4096)
-        end
-        # Drain anything that arrived after the predicate was last evaluated.
         loop do
           out << read_nonblock(4096)
-        rescue Quic::Error::WaitReadable, EOFError
+        rescue Quic::Error::WaitReadable
+          @client.pump_once
+        rescue EOFError
           break
         end
         out
       else
-        @client.pump_until { @recv_buffer.bytesize > 0 || @fin_received }
-        begin
-          read_nonblock(length)
+        loop do
+          return read_nonblock(length)
+        rescue Quic::Error::WaitReadable
+          @client.pump_once
         rescue EOFError
-          nil
+          return nil
         end
       end
     end
